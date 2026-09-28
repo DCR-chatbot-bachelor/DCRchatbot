@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DcrChatbot.Core/DcrChatbot.Core.csproj" />
+    <Project Path="src/DcrChatbot.Infrastructure/DcrChatbot.Infrastructure.csproj" />
+    <Project Path="src/DcrChatbot.WebApi/DcrChatbot.WebApi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DcrChatbot.IntegrationTests/DcrChatbot.IntegrationTests.csproj" />
+    <Project Path="tests/DcrChatbot.UnitTests/DcrChatbot.UnitTests.csproj" />
+  </Folder>
+</Solution>
