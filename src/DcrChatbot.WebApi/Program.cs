@@ -1,3 +1,4 @@
+using DcrChatbot.Core.Options;
 using DcrChatbot.WebApi.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,14 +8,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services
     .AddOptions<LlmOptions>()
     .Bind(builder.Configuration.GetSection(LlmOptions.SectionName))
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
+    .ValidateDataAnnotations();
 
 builder.Services
     .AddOptions<DcrOptions>()
     .Bind(builder.Configuration.GetSection(DcrOptions.SectionName))
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
+    .ValidateDataAnnotations();
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
