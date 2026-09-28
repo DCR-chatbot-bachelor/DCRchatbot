@@ -8,12 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services
     .AddOptions<LlmOptions>()
     .Bind(builder.Configuration.GetSection(LlmOptions.SectionName))
-    .ValidateDataAnnotations();
+     .ValidateDataAnnotations()
+     .ValidateOnStart();
 
 builder.Services
     .AddOptions<DcrOptions>()
     .Bind(builder.Configuration.GetSection(DcrOptions.SectionName))
-    .ValidateDataAnnotations();
+     .ValidateDataAnnotations()
+     .ValidateOnStart();
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

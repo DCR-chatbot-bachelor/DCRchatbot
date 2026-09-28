@@ -4,7 +4,7 @@ public sealed class LlmOptions
 {
     public const string SectionName = "Llm";
 
-    public string ModelId { get; set; } = "gemini-2.5-flash";
+    public string ModelId { get; set; } = "gemini-3.6-flash";
     public double Temperature { get; set; } = 0.0;
     public int MaxOutputTokens { get; set; } = 500;
     public string PromptVersion { get; set; } = "v1";
