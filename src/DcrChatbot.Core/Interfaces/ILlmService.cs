@@ -21,7 +21,7 @@ public class TokenUsageResult
 public interface ILlmService
 {
     /// <summary>
-    /// Trækker intention og vaerdier ud af borgerens fritekst som et struktureret objekt (FR-LLM-2, NFR-4).
+    /// Trækker intention og værdier ud af borgerens fritekst som et struktureret objekt (FR-LLM-2, NFR-4).
     /// </summary>
     Task<(LlmMatchResult MatchResult, TokenUsageResult TokenUsage)> ExtractIntentAsync(
         string userMessage,
