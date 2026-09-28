@@ -1,15 +1,8 @@
 using DcrChatbot.Core.Domain.Entities;
+using DcrChatbot.Core.Options;
 using DcrChatbot.Core.Domain.ValueObjects;
 
 namespace DcrChatbot.Core.Interfaces;
-
-public class LlmOptions
-{
-    public string ModelId { get; set; } = "gemini-2.5-flash";
-    public double Temperature { get; set; } = 0.0;
-    public int MaxOutputTokens { get; set; } = 500;
-    public string SystemPrompt { get; set; } = string.Empty;
-}
 
 public class TokenUsageResult
 {
