@@ -5,6 +5,7 @@ namespace DcrChatbot.Core.Domain.Entities;
 public class ChatSession
 {
     public string SessionId { get; set; } = Guid.NewGuid().ToString();
+    public string GraphId { get; set; } = string.Empty;
     public ExecutionMode Mode { get; set; } = ExecutionMode.NeuroSymbolic;
     public string? SimulationId { get; set; }
     public GraphState? CurrentGraphState { get; set; }

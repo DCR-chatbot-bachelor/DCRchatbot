@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace DcrChatbot.WebApi.Configuration;
+namespace DcrChatbot.Core.Options;
 
 public sealed class DcrOptions
 {

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DcrChatbot.Core\DcrChatbot.Core.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.7" />
   </ItemGroup>
 
   <PropertyGroup>
