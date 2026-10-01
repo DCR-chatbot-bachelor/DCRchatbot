@@ -93,6 +93,12 @@ public sealed class DcrRepositoryClient : IDcrRepository
         {
             GraphId = graphId,
             SimulationId = simulationId,
+            IsAccepting = GetBoolean(document.RootElement, "isAccepting"),
+            CurrentTime = GetDateTimeOffset(document.RootElement, "currentTime"),
+            NextDelay = GetString(document.RootElement, "nextDelay"),
+            NextDeadline = GetString(document.RootElement, "nextDeadline"),
+            CurrentPhase = GetString(document.RootElement, "currentPhase"),
+            CurrentPhaseTitle = GetString(document.RootElement, "currentPhaseTitle"),
             Events = ReadEvents(document.RootElement)
         };
     }
@@ -165,19 +171,37 @@ private HttpRequestMessage CreateRequest(HttpMethod method, string relativeUri)
         return new DcrEvent
         {
             Id = GetString(element, "id", "eventId") ?? string.Empty,
+            Included = GetBoolean(element, "included"),
+            IsProductive = GetBoolean(element, "IsProductive", "isProductive"),
+            Sequence = GetInt32(element, "sequence"),
             Label = GetString(element, "label", "name") ?? string.Empty,
+            Value = GetString(element, "value"),
+            DisplayValue = GetString(element, "displayValue"),
             Description = GetString(element, "description"),
             Explanation = GetString(element, "explanation", "guidance"),
             DataType = GetString(element, "dataType", "datatype") ?? "string",
+            Roles = GetString(element, "roles"),
+            Type = GetString(element, "type"),
+            Tags = GetString(element, "tags"),
+            Deadline = GetString(element, "deadline"),
+            Phases = GetString(element, "phases"),
+            EventType = GetString(element, "eventType"),
+            EngineDataType = GetNullableInt32(element, "engineDataType"),
             IsEnabled = GetBoolean(element, "enabled", "isEnabled"),
-            IsExecuted = GetBoolean(element, "executed", "isExecuted"),
+            IsExecuted = GetNullableBoolean(element, "executed", "isExecuted"),
             IsPending = GetBoolean(element, "pending", "isPending"),
+            ChoiceValues = GetString(element, "choiceValues") ?? string.Empty,
             AllowedValues = ReadStringArray(element, "allowedValues", "choiceValues")
         };
     }
 
     private static JsonElement GetProperty(JsonElement element, params string[] names)
     {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return default;
+        }
+
         foreach (var name in names)
         {
             if (element.TryGetProperty(name, out var value))
@@ -193,6 +217,53 @@ private HttpRequestMessage CreateRequest(HttpMethod method, string relativeUri)
     {
         var value = GetProperty(element, names);
         return value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    }
+
+    private static int GetInt32(JsonElement element, params string[] names) =>
+        GetNullableInt32(element, names) ?? 0;
+
+    private static int? GetNullableInt32(JsonElement element, params string[] names)
+    {
+        var value = GetProperty(element, names);
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+        {
+            return number;
+        }
+
+        return value.ValueKind == JsonValueKind.String &&
+            int.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static DateTimeOffset? GetDateTimeOffset(JsonElement element, params string[] names)
+    {
+        var value = GetString(element, names);
+        return DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+    }
+
+    private static bool? GetNullableBoolean(JsonElement element, params string[] names)
+    {
+        var value = GetProperty(element, names);
+        if (value.ValueKind == JsonValueKind.Null || value.ValueKind == JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        return value.ValueKind == JsonValueKind.String &&
+            bool.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
     }
 
     private static bool GetBoolean(JsonElement element, params string[] names)

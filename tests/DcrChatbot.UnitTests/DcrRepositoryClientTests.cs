@@ -49,16 +49,31 @@ public sealed class DcrRepositoryClientTests
     public async Task GetGraphStateAsync_MapsEventsFromJson()
     {
         var handler = new RecordingHandler(_ => Response(
-            "[{\"id\":\"income\",\"label\":\"Income\",\"dataType\":\"integer\"," +
-            "\"enabled\":true,\"executed\":false,\"pending\":true,\"choiceValues\":\"1000,2000\"}]",
+            "{\"isAccepting\":false,\"currentTime\":\"2026-10-01T08:42:15.7764149+00:00\"," +
+            "\"nextDelay\":null,\"nextDeadline\":null,\"currentPhase\":null," +
+            "\"currentPhaseTitle\":null,\"events\":[{\"id\":\"income\"," +
+            "\"included\":true,\"IsProductive\":false,\"enabled\":true," +
+            "\"pending\":true,\"executed\":null,\"label\":\"Income\"," +
+            "\"sequence\":3,\"value\":\"\",\"displayValue\":\"\"," +
+            "\"dataType\":\"int\",\"choiceValues\":\"1000,2000\"," +
+            "\"roles\":\"User\",\"engineDataType\":12}]} ",
             "application/json"));
         var client = CreateClient(handler);
 
         var state = await client.GetGraphStateAsync("graph-1", "simulation-2");
 
+        Assert.False(state.IsAccepting);
+        Assert.Equal(
+            "2026-10-01T08:42:15.7764149+00:00",
+            state.CurrentTime!.Value.ToString("O"));
         var dcrEvent = Assert.Single(state.Events);
         Assert.Equal("income", dcrEvent.Id);
-        Assert.Equal("integer", dcrEvent.DataType);
+        Assert.Equal("int", dcrEvent.DataType);
+        Assert.True(dcrEvent.Included);
+        Assert.False(dcrEvent.IsProductive);
+        Assert.Equal(3, dcrEvent.Sequence);
+        Assert.Null(dcrEvent.IsExecuted);
+        Assert.Equal(12, dcrEvent.EngineDataType);
         Assert.True(dcrEvent.IsEnabled);
         Assert.Equal(["1000", "2000"], dcrEvent.AllowedValues);
     }
