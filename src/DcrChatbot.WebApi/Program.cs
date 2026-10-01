@@ -1,5 +1,6 @@
+using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
-using DcrChatbot.WebApi.Configuration;
+using DcrChatbot.Infrastructure.DcrRepo;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,15 @@ builder.Services
      .ValidateOnStart();
 
 builder.Services.AddControllers();
+builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProvider, client) =>
+{
+    var dcrOptions = serviceProvider
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<DcrOptions>>()
+        .Value;
+
+    client.BaseAddress = new Uri(dcrOptions.RootUrl, UriKind.Absolute);
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 

@@ -16,5 +16,4 @@
     <ProjectReference Include="..\DcrChatbot.Core\DcrChatbot.Core.csproj" />
     <ProjectReference Include="..\DcrChatbot.Infrastructure\DcrChatbot.Infrastructure.csproj" />
   </ItemGroup>
-
 </Project>

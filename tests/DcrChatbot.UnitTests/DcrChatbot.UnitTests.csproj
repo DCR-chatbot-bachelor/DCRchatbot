@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DcrChatbot.Core\DcrChatbot.Core.csproj" />
+    <ProjectReference Include="..\..\src\DcrChatbot.Infrastructure\DcrChatbot.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>
