@@ -2,6 +2,7 @@ using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
+using DcrChatbot.Infrastructure.LlmProviders;
 using DcrChatbot.Infrastructure.Session;
 using DcrChatbot.WebApi.Middleware;
 
@@ -37,6 +38,11 @@ builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProv
 
     client.BaseAddress = new Uri(dcrOptions.RootUrl, UriKind.Absolute);
     client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<ILlmService, GeminiLlmService>(client =>
+{
+    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/", UriKind.Absolute);
+    client.Timeout = TimeSpan.FromSeconds(60);
 });
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
