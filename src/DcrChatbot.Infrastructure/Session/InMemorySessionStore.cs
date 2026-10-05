@@ -6,8 +6,8 @@ namespace DcrChatbot.Infrastructure.Session;
 public sealed class InMemorySessionStore : ISessionStore
 {
     private readonly Dictionary<string, ChatSession> sessions = new();
-    private readonly Dictionary<string, SemaphoreSlim> locks = new();
     private readonly object syncRoot = new();
+    private readonly SessionLockManager lockManager = new();
 
     public Task<ChatSession?> GetSessionAsync(
         string sessionId,
@@ -25,20 +25,12 @@ public sealed class InMemorySessionStore : ISessionStore
         Func<ChatSession, Task<TResult>> operation,
         CancellationToken cancellationToken = default)
     {
-        var sessionLock = GetLock(sessionId);
-        await sessionLock.WaitAsync(cancellationToken);
-        try
-        {
-            var session = await GetSessionAsync(sessionId, cancellationToken)
-                ?? throw new KeyNotFoundException("Samtalen blev ikke fundet.");
-            var result = await operation(session);
-            await SaveSessionAsync(session, cancellationToken);
-            return result;
-        }
-        finally
-        {
-            sessionLock.Release();
-        }
+        using var sessionLock = await lockManager.AcquireAsync(sessionId, cancellationToken);
+        var session = await GetSessionAsync(sessionId, cancellationToken)
+            ?? throw new KeyNotFoundException("Samtalen blev ikke fundet.");
+        var result = await operation(session);
+        await SaveSessionAsync(session, cancellationToken);
+        return result;
     }
 
     public Task SaveSessionAsync(
@@ -53,28 +45,14 @@ public sealed class InMemorySessionStore : ISessionStore
         return Task.CompletedTask;
     }
 
-    public Task DeleteSessionAsync(
+    public async Task DeleteSessionAsync(
         string sessionId,
         CancellationToken cancellationToken = default)
     {
+        using var sessionLock = await lockManager.AcquireAsync(sessionId, cancellationToken);
         lock (syncRoot)
         {
             sessions.Remove(sessionId);
-        }
-        return Task.CompletedTask;
-    }
-
-    private SemaphoreSlim GetLock(string sessionId)
-    {
-        lock (syncRoot)
-        {
-            if (!locks.TryGetValue(sessionId, out var sessionLock))
-            {
-                sessionLock = new SemaphoreSlim(1, 1);
-                locks[sessionId] = sessionLock;
-            }
-
-            return sessionLock;
         }
     }
 

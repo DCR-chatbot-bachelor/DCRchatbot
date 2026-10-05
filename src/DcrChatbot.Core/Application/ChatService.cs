@@ -82,8 +82,16 @@ public sealed class ChatService(
             var draft = FindDraft(session, pendingAnswerId);
             if (confirm)
             {
+                if (draft.ExecutionStatus == "Executing" || draft.ExecutionStatus == "Executed")
+                {
+                    throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke udføres igen.");
+                }
+
                 var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
+                draft.ExecutionStatus = "Executing";
+                await sessionStore.SaveSessionAsync(session, cancellationToken);
                 await dcrRepository.ExecuteEventAsync(session.GraphId, simulationId, draft.EventId, draft.ProposedValue, cancellationToken);
+                draft.ExecutionStatus = "Executed";
                 session.History.Add(new ChatMessage { Sender = "Bot", Content = "Kladde bekræftet og event udført." });
             }
             else
