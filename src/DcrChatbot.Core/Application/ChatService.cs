@@ -66,9 +66,22 @@ public sealed class ChatService(
         var message = RequireValue(request.Message, "Den reviderede besked må ikke være tom.");
         return await sessionStore.ExecuteAsync(sessionId, session =>
         {
-            RemoveDraft(session, request.TargetPendingAnswerId);
+            var existingDraft = FindDraft(session, request.TargetPendingAnswerId);
+            if (existingDraft.ExecutionStatus == "Executing" || existingDraft.ExecutionStatus == "Executed")
+            {
+                throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke fjernes.");
+            }
+
+            var draftCountBefore = session.PendingAnswersQueue.Count;
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
-            return Task.FromResult(CreateDraft(session, message));
+            var response = CreateDraft(session, message);
+            if (session.PendingAnswersQueue.Count == draftCountBefore)
+            {
+                return Task.FromResult(response);
+            }
+
+            session.PendingAnswersQueue.Remove(existingDraft);
+            return Task.FromResult(response);
         }, cancellationToken);
     }
 

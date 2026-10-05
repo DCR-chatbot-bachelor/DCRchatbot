@@ -2,7 +2,7 @@ namespace DcrChatbot.Infrastructure.Session;
 
 internal sealed class SessionLockManager
 {
-    private readonly Dictionary<string, LockEntry> entries = new();
+    private readonly Dictionary<string, LockEntry> entries = new(StringComparer.OrdinalIgnoreCase);
     private readonly object syncRoot = new();
 
     public async Task<IDisposable> AcquireAsync(string sessionId, CancellationToken cancellationToken)
