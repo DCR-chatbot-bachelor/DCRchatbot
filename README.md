@@ -43,3 +43,10 @@ Pop-Location
 
 The API uses the URL shown by ASP.NET Core, normally `http://localhost:5169`.
 The Vite client normally runs at `http://localhost:5173`.
+
+## Session storage
+
+Chat sessions are persisted as JSON files below the API's `App_Data/sessions`
+directory and each session operation is serialized. This supports restarts for
+a single API instance. Deployments with multiple API instances must replace
+`JsonFileSessionStore` with a shared store such as Redis or a database.

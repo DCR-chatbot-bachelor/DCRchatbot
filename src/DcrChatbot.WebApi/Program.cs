@@ -1,7 +1,10 @@
 using DcrChatbot.Core.Interfaces;
+using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
 using DcrChatbot.Infrastructure.LlmProviders;
+using DcrChatbot.Infrastructure.Session;
+using DcrChatbot.WebApi.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +23,13 @@ builder.Services
      .ValidateOnStart();
 
 builder.Services.AddControllers();
+builder.Services.AddCors(options => options.AddPolicy("Client", policy =>
+    policy.WithOrigins("http://localhost:5173")
+        .AllowAnyHeader()
+        .AllowAnyMethod()));
+
+builder.Services.AddSingleton<ISessionStore, JsonFileSessionStore>();
+builder.Services.AddScoped<IChatService, ChatService>();
 builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProvider, client) =>
 {
     var dcrOptions = serviceProvider
@@ -44,6 +54,9 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
+
+app.UseCors("Client");
+app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 app.UseHttpsRedirection();
 
