@@ -1,15 +1,25 @@
-using System.Collections.Concurrent;
-
 namespace DcrChatbot.Infrastructure.Session;
 
 internal sealed class SessionLockManager
 {
-    private readonly ConcurrentDictionary<string, LockEntry> entries = new();
+    private readonly Dictionary<string, LockEntry> entries = new();
+    private readonly object syncRoot = new();
 
     public async Task<IDisposable> AcquireAsync(string sessionId, CancellationToken cancellationToken)
     {
-        var entry = entries.GetOrAdd(sessionId, _ => new LockEntry());
-        Interlocked.Increment(ref entry.ReferenceCount);
+        LockEntry entry;
+        lock (syncRoot)
+        {
+            if (!entries.TryGetValue(sessionId, out var existingEntry))
+            {
+                existingEntry = new LockEntry();
+                entries[sessionId] = existingEntry;
+            }
+
+            entry = existingEntry;
+            entry.ReferenceCount++;
+        }
+
         try
         {
             await entry.Semaphore.WaitAsync(cancellationToken);
@@ -30,9 +40,19 @@ internal sealed class SessionLockManager
 
     private void ReleaseReference(string sessionId, LockEntry entry)
     {
-        if (Interlocked.Decrement(ref entry.ReferenceCount) == 0)
+        var shouldDispose = false;
+        lock (syncRoot)
         {
-            entries.TryRemove(new KeyValuePair<string, LockEntry>(sessionId, entry));
+            entry.ReferenceCount--;
+            if (entry.ReferenceCount == 0)
+            {
+                entries.Remove(sessionId);
+                shouldDispose = true;
+            }
+        }
+
+        if (shouldDispose)
+        {
             entry.Semaphore.Dispose();
         }
     }
