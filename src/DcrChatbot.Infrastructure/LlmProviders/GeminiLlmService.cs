@@ -76,8 +76,7 @@ public sealed class GeminiLlmService : ILlmService
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
-        var requestUri = $"v1beta/models/{Uri.EscapeDataString(options.ModelId)}:generateContent" +
-                         $"?key={Uri.EscapeDataString(options.ApiKey)}";
+        var requestUri = $"v1beta/models/{Uri.EscapeDataString(options.ModelId)}:generateContent";
         var request = new GeminiRequest
         {
             SystemInstruction = new GeminiContent
@@ -100,11 +99,13 @@ public sealed class GeminiLlmService : ILlmService
             }
         };
 
-        using var response = await httpClient.PostAsJsonAsync(
-            requestUri,
-            request,
-            JsonOptions,
-            cancellationToken);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = JsonContent.Create(request, options: JsonOptions)
+        };
+        httpRequest.Headers.Add("x-goog-api-key", options.ApiKey);
+
+        using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
         stopwatch.Stop();
 
         if (!response.IsSuccessStatusCode)

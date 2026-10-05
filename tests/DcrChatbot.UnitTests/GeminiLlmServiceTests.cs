@@ -48,6 +48,9 @@ public sealed class GeminiLlmServiceTests
             .GetString();
         Assert.Contains("Age", prompt);
         Assert.Contains("How old are you?", prompt);
+        Assert.Equal("/v1beta/models/test-model:generateContent", handler.LastRequestUri!.AbsolutePath);
+        Assert.Equal("test-key", handler.LastApiKeyHeader);
+        Assert.DoesNotContain("key=", handler.LastRequestUri.Query);
     }
 
     [Fact]
@@ -125,11 +128,17 @@ public sealed class GeminiLlmServiceTests
         Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
         public string? LastBody { get; private set; }
+        public Uri? LastRequestUri { get; private set; }
+        public string? LastApiKeyHeader { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            LastRequestUri = request.RequestUri;
+            LastApiKeyHeader = request.Headers.TryGetValues("x-goog-api-key", out var values)
+                ? values.FirstOrDefault()
+                : null;
             LastBody = request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken);
