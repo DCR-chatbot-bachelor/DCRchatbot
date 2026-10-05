@@ -10,6 +10,14 @@ public interface ISessionStore
     Task<ChatSession?> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Kører en hel session-operation atomisk og gemmer resultatet bagefter.
+    /// </summary>
+    Task<TResult> ExecuteAsync<TResult>(
+        string sessionId,
+        Func<ChatSession, Task<TResult>> operation,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gemmer eller opdaterer samtale-tilstanden.
     /// </summary>
     Task SaveSessionAsync(ChatSession session, CancellationToken cancellationToken = default);

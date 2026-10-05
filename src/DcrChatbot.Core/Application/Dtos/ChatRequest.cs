@@ -4,6 +4,7 @@ namespace DcrChatbot.Core.Application.Dtos;
 
 public class ChatRequest
 {
+    public string? GraphId { get; set; }
     public string? SessionId { get; set; }
     public string Message { get; set; } = string.Empty;
     public ExecutionMode Mode { get; set; } = ExecutionMode.NeuroSymbolic;
