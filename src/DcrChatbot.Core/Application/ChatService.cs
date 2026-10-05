@@ -81,7 +81,7 @@ public sealed class ChatService(
             }
 
             session.PendingAnswersQueue.Remove(existingDraft);
-            return Task.FromResult(response);
+            return Task.FromResult(ToResponse(session, response.Message));
         }, cancellationToken);
     }
 
