@@ -32,18 +32,17 @@ public sealed class ChatService(
         ChatRequest request,
         CancellationToken cancellationToken = default)
     {
-        var session = await GetSessionAsync(sessionId, cancellationToken);
         var message = RequireValue(request.Message, "Beskeden må ikke være tom.");
-        session.History.Add(new ChatMessage { Sender = "User", Content = message });
-
-        if (session.PendingAnswersQueue.Count > 0)
+        return await sessionStore.ExecuteAsync(sessionId, session =>
         {
-            throw new InvalidOperationException("Kladde skal bekræftes, afvises eller rettes, før næste besked kan behandles.");
-        }
+            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+            if (session.PendingAnswersQueue.Count > 0)
+            {
+                throw new ChatConflictException("Kladde skal bekræftes, afvises eller rettes, før næste besked kan behandles.");
+            }
 
-        var response = CreateDraft(session, message);
-        await sessionStore.SaveSessionAsync(session, cancellationToken);
-        return response;
+            return Task.FromResult(CreateDraft(session, message));
+        }, cancellationToken);
     }
 
     public Task<ChatResponse> ConfirmDraftAsync(
@@ -64,12 +63,12 @@ public sealed class ChatService(
         CancellationToken cancellationToken = default)
     {
         var message = RequireValue(request.Message, "Den reviderede besked må ikke være tom.");
-        var session = await GetSessionAsync(sessionId, cancellationToken);
-        RemoveDraft(session, request.TargetPendingAnswerId);
-        session.History.Add(new ChatMessage { Sender = "User", Content = message });
-        var response = CreateDraft(session, message);
-        await sessionStore.SaveSessionAsync(session, cancellationToken);
-        return response;
+        return await sessionStore.ExecuteAsync(sessionId, session =>
+        {
+            RemoveDraft(session, request.TargetPendingAnswerId);
+            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+            return Task.FromResult(CreateDraft(session, message));
+        }, cancellationToken);
     }
 
     private async Task<ChatResponse> ResolveDraftAsync(
@@ -78,29 +77,24 @@ public sealed class ChatService(
         bool confirm,
         CancellationToken cancellationToken)
     {
-        var session = await GetSessionAsync(sessionId, cancellationToken);
-        var draft = FindDraft(session, pendingAnswerId);
-
-        if (confirm)
+        return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
-            var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
-            await dcrRepository.ExecuteEventAsync(
-                session.GraphId,
-                simulationId,
-                draft.EventId,
-                draft.ProposedValue,
-                cancellationToken);
-            session.History.Add(new ChatMessage { Sender = "Bot", Content = "Kladde bekræftet og event udført." });
-        }
-        else
-        {
-            session.History.Add(new ChatMessage { Sender = "Bot", Content = "Kladde afvist." });
-        }
+            var draft = FindDraft(session, pendingAnswerId);
+            if (confirm)
+            {
+                var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
+                await dcrRepository.ExecuteEventAsync(session.GraphId, simulationId, draft.EventId, draft.ProposedValue, cancellationToken);
+                session.History.Add(new ChatMessage { Sender = "Bot", Content = "Kladde bekræftet og event udført." });
+            }
+            else
+            {
+                session.History.Add(new ChatMessage { Sender = "Bot", Content = "Kladde afvist." });
+            }
 
-        session.PendingAnswersQueue.Remove(draft);
-        await RefreshStateAsync(session, cancellationToken);
-        await sessionStore.SaveSessionAsync(session, cancellationToken);
-        return ToResponse(session, confirm ? "Kladde bekræftet." : "Kladde afvist.");
+            session.PendingAnswersQueue.Remove(draft);
+            await RefreshStateAsync(session, cancellationToken);
+            return ToResponse(session, confirm ? "Kladde bekræftet." : "Kladde afvist.");
+        }, cancellationToken);
     }
 
     private ChatResponse CreateDraft(ChatSession session, string message)
@@ -131,12 +125,6 @@ public sealed class ChatService(
                 session.SimulationId,
                 cancellationToken);
         }
-    }
-
-    private async Task<ChatSession> GetSessionAsync(string sessionId, CancellationToken cancellationToken)
-    {
-        var session = await sessionStore.GetSessionAsync(sessionId, cancellationToken);
-        return session ?? throw new KeyNotFoundException("Samtalen blev ikke fundet.");
     }
 
     private static PendingAnswer FindDraft(ChatSession session, string? pendingAnswerId) =>

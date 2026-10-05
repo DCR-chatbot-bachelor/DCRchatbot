@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Interfaces;
 
@@ -6,22 +5,51 @@ namespace DcrChatbot.Infrastructure.Session;
 
 public sealed class InMemorySessionStore : ISessionStore
 {
-    private readonly ConcurrentDictionary<string, ChatSession> sessions = new();
+    private readonly Dictionary<string, ChatSession> sessions = new();
+    private readonly Dictionary<string, SemaphoreSlim> locks = new();
+    private readonly object syncRoot = new();
 
     public Task<ChatSession?> GetSessionAsync(
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        sessions.TryGetValue(sessionId, out var session);
-        return Task.FromResult(session);
+        lock (syncRoot)
+        {
+            sessions.TryGetValue(sessionId, out var session);
+            return Task.FromResult(session is null ? null : Clone(session));
+        }
+    }
+
+    public async Task<TResult> ExecuteAsync<TResult>(
+        string sessionId,
+        Func<ChatSession, Task<TResult>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        var sessionLock = GetLock(sessionId);
+        await sessionLock.WaitAsync(cancellationToken);
+        try
+        {
+            var session = await GetSessionAsync(sessionId, cancellationToken)
+                ?? throw new KeyNotFoundException("Samtalen blev ikke fundet.");
+            var result = await operation(session);
+            await SaveSessionAsync(session, cancellationToken);
+            return result;
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
     }
 
     public Task SaveSessionAsync(
         ChatSession session,
         CancellationToken cancellationToken = default)
     {
-        session.LastUpdatedAt = DateTime.UtcNow;
-        sessions[session.SessionId] = session;
+        lock (syncRoot)
+        {
+            session.LastUpdatedAt = DateTime.UtcNow;
+            sessions[session.SessionId] = Clone(session);
+        }
         return Task.CompletedTask;
     }
 
@@ -29,7 +57,29 @@ public sealed class InMemorySessionStore : ISessionStore
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        sessions.TryRemove(sessionId, out _);
+        lock (syncRoot)
+        {
+            sessions.Remove(sessionId);
+        }
         return Task.CompletedTask;
     }
+
+    private SemaphoreSlim GetLock(string sessionId)
+    {
+        lock (syncRoot)
+        {
+            if (!locks.TryGetValue(sessionId, out var sessionLock))
+            {
+                sessionLock = new SemaphoreSlim(1, 1);
+                locks[sessionId] = sessionLock;
+            }
+
+            return sessionLock;
+        }
+    }
+
+    private static ChatSession Clone(ChatSession session) =>
+        System.Text.Json.JsonSerializer.Deserialize<ChatSession>(
+            System.Text.Json.JsonSerializer.Serialize(session))
+        ?? throw new InvalidOperationException("Sessionen kunne ikke kopieres.");
 }

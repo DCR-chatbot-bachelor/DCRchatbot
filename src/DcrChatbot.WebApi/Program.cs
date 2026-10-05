@@ -27,7 +27,7 @@ builder.Services.AddCors(options => options.AddPolicy("Client", policy =>
         .AllowAnyHeader()
         .AllowAnyMethod()));
 
-builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
+builder.Services.AddSingleton<ISessionStore, JsonFileSessionStore>();
 builder.Services.AddScoped<IChatService, ChatService>();
 builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProvider, client) =>
 {

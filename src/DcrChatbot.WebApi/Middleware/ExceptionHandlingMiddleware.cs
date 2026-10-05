@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using DcrChatbot.Core.Application;
 
 namespace DcrChatbot.WebApi.Middleware;
 
@@ -24,7 +25,7 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         {
             ArgumentException => (int)HttpStatusCode.BadRequest,
             KeyNotFoundException => (int)HttpStatusCode.NotFound,
-            InvalidOperationException => (int)HttpStatusCode.Conflict,
+            ChatConflictException => (int)HttpStatusCode.Conflict,
             _ => (int)HttpStatusCode.InternalServerError
         };
 
