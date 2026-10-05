@@ -17,18 +17,29 @@ public sealed class JsonFileSessionStore : ISessionStore
     }
 
     public async Task<ChatSession?> GetSessionAsync(
-        string sessionId,
-        CancellationToken cancellationToken = default)
+    string sessionId,
+    CancellationToken cancellationToken = default)
+{
+    var path = GetPath(sessionId);
+    if (!File.Exists(path))
     {
-        var path = GetPath(sessionId);
-        if (!File.Exists(path))
-        {
-            return null;
-        }
-
-        await using var stream = File.OpenRead(path);
-        return await JsonSerializer.DeserializeAsync<ChatSession>(stream, jsonOptions, cancellationToken);
+        return null;
     }
+
+    ChatSession? session;
+    await using (var stream = File.OpenRead(path))
+    {
+        session = await JsonSerializer.DeserializeAsync<ChatSession>(stream, jsonOptions, cancellationToken);
+    }
+
+    if (session is not null && SessionExpiry.HasExpired(session))
+    {
+        File.Delete(path);
+        return null;
+    }
+
+    return session;
+}
 
     public async Task<TResult> ExecuteAsync<TResult>(
         string sessionId,

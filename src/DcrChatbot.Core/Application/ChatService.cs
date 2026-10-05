@@ -1,14 +1,20 @@
+using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Application.Dtos;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Interfaces;
-using System.Globalization;
+using DcrChatbot.Core.Options;
+using Microsoft.Extensions.Options;
 
 namespace DcrChatbot.Core.Application;
 
 public sealed class ChatService(
     IDcrRepository dcrRepository,
-    ISessionStore sessionStore) : IChatService
+    ILlmService llmService,
+    ISessionStore sessionStore,
+    IOptions<LlmOptions> llmOptions) : IChatService
 {
+    private readonly LlmOptions llmOptions = llmOptions.Value;
+
     public async Task<ChatResponse> StartAsync(
         ChatRequest request,
         CancellationToken cancellationToken = default)
@@ -34,15 +40,16 @@ public sealed class ChatService(
         CancellationToken cancellationToken = default)
     {
         var message = RequireValue(request.Message, "Beskeden må ikke være tom.");
-        return await sessionStore.ExecuteAsync(sessionId, session =>
+        return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
-                throw new ChatConflictException("Kladde skal bekræftes, afvises eller rettes, før næste besked kan behandles.");
+                throw new ChatConflictException(
+                    "Kladde skal bekræftes, afvises eller rettes, før næste besked kan behandles.");
             }
 
-            return Task.FromResult(CreateDraft(session, message));
+            return await CreateDraftAsync(session, message, cancellationToken);
         }, cancellationToken);
     }
 
@@ -64,24 +71,17 @@ public sealed class ChatService(
         CancellationToken cancellationToken = default)
     {
         var message = RequireValue(request.Message, "Den reviderede besked må ikke være tom.");
-        return await sessionStore.ExecuteAsync(sessionId, session =>
+        return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
             var existingDraft = FindDraft(session, request.TargetPendingAnswerId);
-            if (existingDraft.ExecutionStatus == "Executing" || existingDraft.ExecutionStatus == "Executed")
+            if (existingDraft.ExecutionStatus is "Executing" or "Executed")
             {
-                throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke fjernes.");
-            }
-
-            var draftCountBefore = session.PendingAnswersQueue.Count;
-            session.History.Add(new ChatMessage { Sender = "User", Content = message });
-            var response = CreateDraft(session, message);
-            if (session.PendingAnswersQueue.Count == draftCountBefore)
-            {
-                return Task.FromResult(response);
+                throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke rettes.");
             }
 
             session.PendingAnswersQueue.Remove(existingDraft);
-            return Task.FromResult(ToResponse(session, response.Message));
+            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+            return await CreateDraftAsync(session, message, cancellationToken);
         }, cancellationToken);
     }
 
@@ -96,17 +96,19 @@ public sealed class ChatService(
             var draft = FindDraft(session, pendingAnswerId);
             if (confirm)
             {
-                if (draft.ExecutionStatus == "Executing" || draft.ExecutionStatus == "Executed")
+                if (draft.ExecutionStatus is "Executing" or "Executed")
                 {
                     throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke udføres igen.");
                 }
 
+                // FR-HITL-1: intet event når DCR uden at borgeren først har bekræftet.
                 var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
                 draft.ExecutionStatus = "Executing";
                 await sessionStore.SaveSessionAsync(session, cancellationToken);
                 try
                 {
-                    await dcrRepository.ExecuteEventAsync(session.GraphId, simulationId, draft.EventId, draft.ProposedValue, cancellationToken);
+                    await dcrRepository.ExecuteEventAsync(
+                        session.GraphId, simulationId, draft.EventId, draft.ProposedValue, cancellationToken);
                 }
                 catch
                 {
@@ -129,38 +131,58 @@ public sealed class ChatService(
         }, cancellationToken);
     }
 
-    private ChatResponse CreateDraft(ChatSession session, string message)
+    private async Task<ChatResponse> CreateDraftAsync(
+        ChatSession session, string message, CancellationToken cancellationToken)
     {
-        var enabledEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? [];
-        if (enabledEvents.Count == 0)
+        var candidates = GetCandidateEvents(session.CurrentGraphState);
+        if (candidates.Count == 0)
         {
-            return ToResponse(session, "Der er ingen tilgængelige events at foreslå.");
+            return ToResponse(session, "Der er ingen tilgængelige spørgsmål lige nu.");
         }
 
-        if (!TryResolveDraftInput(message, enabledEvents, out var eventToDraft, out var proposedValue, out var validationError))
+        var (match, _) = await llmService.ExtractIntentAsync(message, candidates, llmOptions, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(match.MatchedEventId))
         {
-            return ToResponse(session, validationError ?? "Beskeden kunne ikke tolkes som en gyldig event-besvarelse.");
+            return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere.");
         }
 
-        var pending = new PendingAnswer
+        var matchedEvent = session.CurrentGraphState!.GetEvent(match.MatchedEventId);
+        var validation = EventValidator.Validate(matchedEvent, match.ExtractedValue);
+
+        if (!validation.IsValid)
         {
-            EventId = eventToDraft.Id,
-            ProposedValue = proposedValue,
-            Explanation = eventToDraft.Explanation ?? eventToDraft.Description,
+            return ToResponse(session, $"Det gav ikke mening: {validation.Message}");
+        }
+
+        var draft = new PendingAnswer
+        {
+            EventId = matchedEvent!.Id,
+            ProposedValue = match.ExtractedValue!,
+            Explanation = match.UserIntentExplanation,
             IsAutoInferred = true
         };
-        session.PendingAnswersQueue.Add(pending);
-        return ToResponse(session, $"Jeg foreslår: {eventToDraft.Label} = {proposedValue}.");
+        session.PendingAnswersQueue.Add(draft);
+
+        return ToResponse(
+            session, $"Jeg har forstået '{matchedEvent.Label}' som '{draft.ProposedValue}'. Er det korrekt?");
     }
+
+    // FR-DCR-4: kun choice-events er kandidater. Label-events er aldrig
+    // kandidater (de er informationsbeskeder, ikke spørgsmål), og
+    // allerede udførte choice-events forbliver kandidater, så borgeren
+    // kan spørge om samme emne igen, så længe det ikke er excluded.
+    private static List<DcrEvent> GetCandidateEvents(GraphState? state) =>
+        state?.EnabledEvents
+            .Where(e => string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase))
+            .ToList() ?? [];
 
     private async Task RefreshStateAsync(ChatSession session, CancellationToken cancellationToken)
     {
         if (session.SimulationId is not null)
         {
             session.CurrentGraphState = await dcrRepository.GetGraphStateAsync(
-                session.GraphId,
-                session.SimulationId,
-                cancellationToken);
+                session.GraphId, session.SimulationId, cancellationToken);
         }
     }
 
@@ -169,141 +191,14 @@ public sealed class ChatService(
             string.IsNullOrWhiteSpace(pendingAnswerId) || draft.Id == pendingAnswerId)
         ?? throw new KeyNotFoundException("Den ønskede kladde blev ikke fundet.");
 
-    private static void RemoveDraft(ChatSession session, string? pendingAnswerId)
-    {
-        var draft = FindDraft(session, pendingAnswerId);
-        if (draft.ExecutionStatus == "Executing" || draft.ExecutionStatus == "Executed")
-        {
-            throw new ChatConflictException("Denne kladde er allerede sendt til DCR og kan ikke fjernes.");
-        }
-
-        session.PendingAnswersQueue.Remove(draft);
-    }
-
-    private static bool TryResolveDraftInput(
-        string message,
-        IReadOnlyList<DcrEvent> enabledEvents,
-        out DcrEvent eventToDraft,
-        out string proposedValue,
-        out string? validationError)
-    {
-        eventToDraft = null!;
-        proposedValue = string.Empty;
-        validationError = null;
-
-        var trimmedMessage = message.Trim();
-        if (trimmedMessage.Length == 0)
-        {
-            validationError = "Beskeden må ikke være tom.";
-            return false;
-        }
-
-        if (TryResolveByPrefix(trimmedMessage, enabledEvents, out eventToDraft, out proposedValue))
-        {
-            return ValidateValue(eventToDraft, proposedValue, out validationError);
-        }
-
-        if (enabledEvents.Count == 1)
-        {
-            eventToDraft = enabledEvents[0];
-            proposedValue = trimmedMessage;
-            return ValidateValue(eventToDraft, proposedValue, out validationError);
-        }
-
-        validationError = "Vælg et event med formatet '<event-id eller navn>: værdi'.";
-        return false;
-    }
-
-    private static bool TryResolveByPrefix(
-        string message,
-        IReadOnlyList<DcrEvent> enabledEvents,
-        out DcrEvent eventToDraft,
-        out string proposedValue)
-    {
-        eventToDraft = null!;
-        proposedValue = string.Empty;
-
-        foreach (var separator in new[] { ':', '=' })
-        {
-            var separatorIndex = message.IndexOf(separator);
-            if (separatorIndex <= 0)
-            {
-                continue;
-            }
-
-            var eventKey = message[..separatorIndex].Trim();
-            var value = message[(separatorIndex + 1)..].Trim();
-            if (eventKey.Length == 0 || value.Length == 0)
-            {
-                continue;
-            }
-
-            var match = enabledEvents.FirstOrDefault(@event =>
-                string.Equals(@event.Id, eventKey, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(@event.Label, eventKey, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                continue;
-            }
-
-            eventToDraft = match;
-            proposedValue = value;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool ValidateValue(DcrEvent @event, string value, out string? validationError)
-    {
-        validationError = null;
-        if (@event.AllowedValues.Count > 0)
-        {
-            var allowedValue = @event.AllowedValues.FirstOrDefault(allowed =>
-                string.Equals(allowed, value, StringComparison.OrdinalIgnoreCase));
-            if (allowedValue is null)
-            {
-                validationError = $"Ugyldig værdi for '{@event.Label}'. Tilladte værdier: {string.Join(", ", @event.AllowedValues)}.";
-                return false;
-            }
-        }
-
-        return @event.DataType.ToLowerInvariant() switch
-        {
-            "boolean" or "bool" =>
-                ValidateTypedValue(bool.TryParse(value, out _), @event, "boolean", out validationError),
-            "int" or "integer" =>
-                ValidateTypedValue(int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _), @event, "integer", out validationError),
-            "number" or "decimal" or "double" or "float" =>
-                ValidateTypedValue(decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out _), @event, "number", out validationError),
-            "date" =>
-                ValidateTypedValue(DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out _), @event, "date", out validationError),
-            "datetime" =>
-                ValidateTypedValue(DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _), @event, "datetime", out validationError),
-            _ => true
-        };
-    }
-
-    private static bool ValidateTypedValue(bool isValid, DcrEvent @event, string expectedType, out string? validationError)
-    {
-        validationError = null;
-        if (isValid)
-        {
-            return true;
-        }
-
-        validationError = $"Ugyldig værdi for '{@event.Label}'. Forventet datatype: {expectedType}.";
-        return false;
-    }
-
     private static ChatResponse ToResponse(ChatSession session, string message) => new()
     {
         SessionId = session.SessionId,
         Message = message,
         Mode = session.Mode,
         PendingDraft = session.PendingAnswersQueue.FirstOrDefault(),
-        AvailableEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? new(),
-        ExecutedEvents = session.CurrentGraphState?.ExecutedEvents.ToList() ?? new(),
+        AvailableEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? [],
+        ExecutedEvents = session.CurrentGraphState?.ExecutedEvents.ToList() ?? [],
         IsEnded = session.CurrentGraphState?.IsAccepting ?? false
     };
 
