@@ -5,6 +5,7 @@ using DcrChatbot.Infrastructure.DcrRepo;
 using DcrChatbot.Infrastructure.LlmProviders;
 using DcrChatbot.Infrastructure.Session;
 using DcrChatbot.WebApi.Middleware;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,7 +23,9 @@ builder.Services
      .ValidateDataAnnotations()
      .ValidateOnStart();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddCors(options => options.AddPolicy("Client", policy =>
     policy.WithOrigins("http://localhost:5173")
         .AllowAnyHeader()

@@ -1,0 +1,136 @@
+Kravspecifikationer
+
+
+
+
+
+
+
+Funktionelle Krav (FR)	2
+1. LLM & Sprogforståelse	2
+FR-LLM-1 (Konfigurerbare Modelparametre):	2
+FR-LLM-2 (Structured Output Extraction):	2
+FR-LLM-3 (FAQ & Begrebsforklaring):	2
+2. DCR Engine & Regelstyring	2
+FR-DCR-1 (Symbolsk Guardrail / Validering):	3
+FR-DCR-2 (Multi-Intent / Afledte Svar):	3
+FR-DCR-3 (DCR.Repo Simulation):	3
+3. Human-in-the-Loop (Brugerbekræftelse & Kontrol)	3
+FR-HITL-1: To-faset Brugerbekræftelse (Human-in-the-Loop / Draft-Commit)	3
+FR-HITL-2: Fortrydelse og rettelse	3
+4. Metode & Test	4
+FR-TEST-1: Støtte til A/B- og Baseline-test	4
+Ikke-funktionelle Krav (NFR)	4
+NFR-1: Lagdelt Arkitektur & Modularitet (Separation of Concerns)	4
+NFR-2 (Udskiftelig LLM Provider - Strategy Pattern):	5
+NFR-3 (Deterministisk Testbarhed & Mocking):	5
+NFR-4 (Auditering & Token-tracking):	5
+NFR-5 (Sikkerhed):	5
+
+
+
+
+
+
+
+
+
+
+
+Funktionelle Krav (FR)
+
+1. LLM & Sprogforståelse
+
+FR-LLM-1 (Konfigurerbare Modelparametre):
+Systemet skal give fuld programmatic og konfigurationsmæssig kontrol over:
+ModelId (f.eks. gemini-2.5-flash, gpt-4o-mini).
+Temperature (adskilt: f.eks. 0.0 for eventsudtræk, 0.2 for sproglig formulering).
+MaxOutputTokens (begrænsning mod unødigt token-forbrug).
+SystemPrompt (versionsstyrede templates til henholdsvis fortolkning og dialog).
+
+FR-LLM-2 (Structured Output Extraction):
+Sprogmodellen skal returnere et struktureret og validerbart JSON-objekt, som mapper borgerens naturlige sprog til systemets datamodel. Objektet skal indeholde:
+
+ID på den identificerede event (MatchedEventId).
+Den udtrukne værdi (ExtractedValue).
+Eventuelle afledte svar på andre events (InferredReplies).
+Markering af om henvendelsen er et oplysende spørgsmål (IsFaqQuestion).
+En kort forklaring på modellens tolkning (UserIntentExplanation)
+
+FR-LLM-3 (FAQ & Begrebsforklaring):
+Hvis borgeren stiller et oplysende spørgsmål (IsFaqQuestion == true), skal systemet hente den officielle forklaring direkte fra DCR-grafens egne metadatafelter (f.eks. eventns vejledning og beskrivelse) og formulere et pædagogisk svar uden at ændre på den igangværende DCR-simulationstilstand.
+
+
+2. DCR Engine & Regelstyring
+
+FR-DCR-1 (Symbolsk Guardrail / Validering):
+Systemets forretningslag må kun sende en event til eksekvering på DCR.Repo, såfremt:
+eventn aktuelt er aktiv og tilladt (enabled) ifølge DCR-grafens tilstand.
+Den udtrukne værdi matcher eventns forventede datatype (korrekt validering af heltal, datoer og svarmuligheder).
+
+FR-DCR-2 (Multi-Intent / Afledte Svar):
+Hvis borgerens sætning indeholder information til flere events på én gang, skal LLM'en udtrække dem i InferredReplies. C#-applikationen skal sætte disse i kø og enten auto-eksekvere dem sekventielt (hvis gyldige) eller præsentere dem for borgeren til bekræftelse.
+FR-DCR-3 (DCR.Repo Simulation):
+Systemet opretter og administrerer simulationen direkte mod DCR.Repo REST API (/sims, /event, /log) uden brug af DCR's lukkede chat-API.
+
+FR-DCR-4 (Samtale-kontinuitet):
+Systemet skal sikre, at der til enhver tid findes mindst én gyldig, ikke-udført event, borgeren kan blive præsenteret for, så en dialog ikke afsluttes utilsigtet (springer til konklusion), før borgeren selv vælger at stoppe, eller alle relevante FAQ-emner er udtømt. Dette skal sikres eksplicit gennem graf-designet (en permanent forankrings-event), ikke overlades til DCR.Repo's implicitte fallback-regler for "productive, not executed"-event.
+ Begrundelse: det var netop dette der fik jeres chat til at dø efter Velkommen-eventet blev udført ved et uheld.
+
+FR-DCR-5 (Konsistent konklusion/statusrapportering):
+Når systemet præsenterer en opsummering eller konklusion for borgeren, må denne kun inkludere event der faktisk er blevet eksekveret i den aktuelle simulation, ikke alle event der teknisk set er enabled i grafen.
+ Begrundelse: get_conclusion-bugget hvor alle tre FAQ-svar blev samlet sammen, fordi ingen af dem tjekkede executed.
+
+
+3. Human-in-the-Loop (Brugerbekræftelse & Kontrol)
+FR-HITL-1: To-faset Brugerbekræftelse (Human-in-the-Loop / Draft-Commit)
+Når LLM'en udtrækker data fra borgerens fritekst, må systemet ikke eksekvere eventn direkte på DCR.Repo. Systemet skal placere den udtrukne værdi i en midlertidig Draft-tilstand og præsentere borgeren for en eksplicit bekræftelse:
+
+Eksempel: "Jeg har forstået, at dit udhus er 35 m². Er det korrekt? [ Ja, fortsæt ] [ Nej, ret svar ]".
+
+Forretningsregel (Commit):
+Først når borgeren aktivt bekræfter, sendes eventet formelt til DCR.Repo. Ved afvisning eller rettelse annulleres kladden, og borgeren guides til at indtaste forfra uden at miste samtalens kontekst.
+
+FR-HITL-2: Fortrydelse og rettelse
+Systemet skal give borgeren mulighed for på et vilkårligt tidspunkt at ændre et tidligere afgivet svar:
+
+Gyldighedstjek: Før en rettelse accepteres, verificeres det hos DCR.Repo, om eventet fortsat er tilladt (enabled). Hvis eventn er låst af en procesregel, gives en forklarende afvisning.
+
+Genberegning: Ved godkendt rettelse gen-eksekveres eventet med den nye værdi, DCR-grafens tilstand genberegnes, og eventuelle afledte svar, som er blevet ugyldiggjort af ændringen, ryddes automatisk.
+
+Feedback: Systemet kvitterer for rettelsen og oplyser borgeren om eventuelle procesmæssige konsekvenser af ændringen.
+
+
+
+4. Metode & Test
+FR-TEST-1: Støtte til A/B- og Baseline-test
+
+For at kunne besvare bachelorprojektets underspørgsmål 1 ("Hvor pålidelige er chatbottens svar sammenlignet med en tilsvarende chatbot uden DCR-graf?"), skal systemet understøtte to eksekverings-modes via konfiguration:
+
+Mode A (Baseline): Ren LLM med FAQ-tekst i system-prompten, men uden DCR-grafkobling og validering.
+
+Mode B (Neuro-Symbolsk DCR): Den fulde løsning med DCR-tilstandsvalidering, metadata-grounding og HITL-bekræftelse.
+
+Måledata:
+Systemet skal logge samtalens trace og udfald, så fejl og hallucinationer kan sammenlignes kvantitativt på et fast test-batteri af borger-scenarier.
+
+
+Ikke-funktionelle Krav (NFR)
+NFR-1: Lagdelt Arkitektur & Modularitet (Separation of Concerns)
+
+Systemet skal opbygges efter en klassisk 3-lags model (Præsentationslag, Forretningslag og Integrationslag) for at sikre høj kohæsion, løs kobling og en klar adskillelse af ansvarsområder. Forretningslogikken skal være teknologisk uafhængig af både brugergrænsefladen og de eksterne API'er.
+NFR-2 (Udskiftelig LLM Provider - Strategy Pattern):
+Integrationen til sprogmodellen skal abstraheres bag et fælles interface (ILlmService), så der via applikationskonfigurationen kan skiftes mellem forskellige udbydere (f.eks. Google Gemini, OpenAI eller lokale modeller) uden ændringer i forretningskoden.
+
+NFR-3 (Deterministisk Testbarhed & Mocking):
+Systemets integrationslag skal understøtte afkobling og brug af mock-data for både DCR.Repo og sprogmodellen, så automatiserede integrationstest kan afvikles hurtigt, deterministisk og uden eksterne API-omkostninger.
+
+NFR-4 (Auditering & Token-tracking):
+Hvert kald til sprogmodellen skal registrere det præcise token-forbrug (prompt- og completion-tokens) samt svartider, så der kan foretages en systematisk omkostnings- og performanceanalyse i bachelorrapporten
+
+NFR-5 (Sikkerhed):
+API-nøgler til eksterne tjenester må aldrig versionsstyres i git. De skal indlæses via applikationens konfigurationssystem med understøttelse af Secret Manager i lokalt udviklingsmiljø og miljøvariable i test- og produktionsmiljøer.
+
+NFR-6 (Statsløst præsentationslag & ekstern samtale-persistens):
+Web API'et skal designes stateless. Al samtale-specifik tilstand (aktivt simulation-id, seneste hændelse, kø af afledte svar) skal opbevares i en dedikeret, ekstern session-store adskilt fra selve applikationslogikken, så systemet kan skaleres horisontalt uden at bryde igangværende samtaler.
+Begrundelse: direkte fortsættelse af jeres egen stateless/skalerbarheds-diskussion, og adskiller sig fra NFR-1 ved at være specifikt om hvor state ligger, ikke bare at lagene er adskilt. 

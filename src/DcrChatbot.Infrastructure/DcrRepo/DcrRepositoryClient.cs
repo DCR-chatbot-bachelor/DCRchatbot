@@ -73,6 +73,39 @@ public sealed class DcrRepositoryClient : IDcrRepository
         };
     }
 
+    public async Task<IReadOnlyList<DcrGraph>> GetGraphsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, "api/graphs");
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, "list DCR graphs", cancellationToken);
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (content.TrimStart().StartsWith("<", StringComparison.Ordinal))
+        {
+            return ParseXmlGraphs(content);
+        }
+
+        using var document = JsonDocument.Parse(content);
+        var graphArray = document.RootElement.ValueKind == JsonValueKind.Array
+            ? document.RootElement
+            : GetProperty(document.RootElement, "graphs", "data", "items");
+
+        if (graphArray.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("DCR.Repo graph response did not contain a graph array.");
+        }
+
+        return graphArray.EnumerateArray()
+            .Select(ReadGraph)
+            .Where(graph => !string.IsNullOrWhiteSpace(graph.GraphId))
+            .ToArray();
+    }
+
     public async Task<GraphState> GetGraphStateAsync(
         string graphId,
         string simulationId,
@@ -164,6 +197,61 @@ private HttpRequestMessage CreateRequest(HttpMethod method, string relativeUri)
         }
 
         return eventArray.EnumerateArray().Select(ReadEvent).ToList();
+    }
+
+    private static DcrGraph ReadGraph(JsonElement element)
+    {
+        return new DcrGraph
+        {
+            GraphId = GetString(element, "id", "graphId", "graphID") ?? string.Empty,
+            Title = GetString(element, "title", "name") ?? string.Empty,
+            Language = GetString(element, "language", "graphLanguage") ?? string.Empty
+        };
+    }
+
+    private static IReadOnlyList<DcrGraph> ParseXmlGraphs(string content)
+    {
+        var document = XDocument.Parse(content, LoadOptions.None);
+        return document
+            .Descendants()
+            .Where(element => element.Name.LocalName.Equals("graph", StringComparison.OrdinalIgnoreCase))
+            .Select(ReadGraph)
+            .Where(graph => !string.IsNullOrWhiteSpace(graph.GraphId))
+            .ToArray();
+    }
+
+    private static DcrGraph ReadGraph(XElement element)
+    {
+        return new DcrGraph
+        {
+            GraphId = GetXmlValue(element, "id", "graphId", "graphID"),
+            Title = GetXmlValue(element, "title", "name"),
+            Language = GetXmlValue(element, "language", "graphLanguage")
+        };
+    }
+
+    private static string GetXmlValue(XElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var attribute = element.Attributes()
+                .FirstOrDefault(attribute =>
+                    attribute.Name.LocalName.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (attribute is not null)
+            {
+                return attribute.Value;
+            }
+
+            var child = element.Elements()
+                .FirstOrDefault(child =>
+                    child.Name.LocalName.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (child is not null)
+            {
+                return child.Value;
+            }
+        }
+
+        return string.Empty;
     }
 
     private static DcrEvent ReadEvent(JsonElement element)

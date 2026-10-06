@@ -16,7 +16,11 @@ public interface IDcrRepository
         string graphId,
         CancellationToken cancellationToken = default);
 
-    
+    /// <summary>
+    /// Henter de grafer, som den konfigurerede DCR.Repo-bruger har adgang til.
+    /// </summary>
+    Task<IReadOnlyList<DcrGraph>> GetGraphsAsync(
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Henter den aktuelle tilstand for simulationen.
