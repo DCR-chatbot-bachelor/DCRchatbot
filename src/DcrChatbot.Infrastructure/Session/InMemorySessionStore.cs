@@ -10,15 +10,25 @@ public sealed class InMemorySessionStore : ISessionStore
     private readonly SessionLockManager lockManager = new();
 
     public Task<ChatSession?> GetSessionAsync(
-        string sessionId,
-        CancellationToken cancellationToken = default)
+    string sessionId,
+    CancellationToken cancellationToken = default)
+{
+    lock (syncRoot)
     {
-        lock (syncRoot)
+        if (!sessions.TryGetValue(sessionId, out var session))
         {
-            sessions.TryGetValue(sessionId, out var session);
-            return Task.FromResult(session is null ? null : Clone(session));
+            return Task.FromResult<ChatSession?>(null);
         }
+
+        if (SessionExpiry.HasExpired(session))
+        {
+            sessions.Remove(sessionId);
+            return Task.FromResult<ChatSession?>(null);
+        }
+
+        return Task.FromResult<ChatSession?>(Clone(session));
     }
+}
 
     public async Task<TResult> ExecuteAsync<TResult>(
         string sessionId,
