@@ -10,6 +10,43 @@ namespace DcrChatbot.UnitTests;
 public sealed class DcrRepositoryClientTests
 {
     [Fact]
+    public async Task GetGraphsAsync_MapsGraphList()
+    {
+        var handler = new RecordingHandler(_ => Response(
+            "{\"graphs\":[{\"id\":\"1826984\",\"title\":\"Citizen graph\",\"language\":\"da\"}," +
+            "{\"graphId\":\"second\",\"name\":\"Second graph\",\"graphLanguage\":\"en\"}]}",
+            "application/json"));
+        var client = CreateClient(handler);
+
+        var graphs = await client.GetGraphsAsync();
+
+        Assert.Equal(2, graphs.Count);
+        Assert.Equal("1826984", graphs[0].GraphId);
+        Assert.Equal("Citizen graph", graphs[0].Title);
+        Assert.Equal("da", graphs[0].Language);
+        Assert.Equal("second", graphs[1].GraphId);
+        Assert.Equal("GET", handler.LastRequest!.Method.Method);
+        Assert.Equal("/api/graphs", handler.LastRequest.RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task GetGraphsAsync_MapsXmlGraphList()
+    {
+        var handler = new RecordingHandler(_ => Response(
+            "<graphs><graph id=\"1826984\" title=\"Citizen graph\">" +
+            "<language>da</language></graph></graphs>",
+            "application/xml"));
+        var client = CreateClient(handler);
+
+        var graphs = await client.GetGraphsAsync();
+
+        var graph = Assert.Single(graphs);
+        Assert.Equal("1826984", graph.GraphId);
+        Assert.Equal("Citizen graph", graph.Title);
+        Assert.Equal("da", graph.Language);
+    }
+
+    [Fact]
     public async Task GetGraphAsync_MapsMetadataFromXml()
     {
         var handler = new RecordingHandler(_ => Response(

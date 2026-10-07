@@ -15,6 +15,7 @@ Initialize User Secrets once from the repository root:
 
 ```powershell
 dotnet user-secrets init --project .\src\DcrChatbot.WebApi
+dotnet user-secrets set "Llm:ApiKey" "your-gemini-api-key" --project .\src\DcrChatbot.WebApi
 dotnet user-secrets set "Llm:ModelId" "your-model-id" --project .\src\DcrChatbot.WebApi
 dotnet user-secrets set "Dcr:ApiKey" "your-api-key" --project .\src\DcrChatbot.WebApi
 dotnet user-secrets set "Dcr:Token" "your-bearer-token" --project .\src\DcrChatbot.WebApi
@@ -24,6 +25,21 @@ Set the DCR URL in `appsettings.json` or override it locally:
 
 ```powershell
 dotnet user-secrets set "Dcr:RootUrl" "https://your-dcr-host/" --project .\src\DcrChatbot.WebApi
+```
+
+The DCR configuration requires all three values: `Dcr:RootUrl`, `Dcr:ApiKey`,
+and `Dcr:Token`. If startup reports that `DcrOptions.ApiKey` is required, set
+the missing DCR API key in User Secrets:
+
+```powershell
+dotnet user-secrets set "Dcr:ApiKey" "your-dcr-api-key" --project .\src\DcrChatbot.WebApi
+```
+
+You can verify that the required secret names exist without printing their
+values:
+
+```powershell
+dotnet user-secrets list --project .\src\DcrChatbot.WebApi
 ```
 
 Start the API:
