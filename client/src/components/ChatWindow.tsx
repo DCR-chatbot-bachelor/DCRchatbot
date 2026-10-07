@@ -31,54 +31,56 @@ export function ChatWindow({
   return (
     <section className="chat-window" aria-label="Chat">
       <div className="chat-window__messages" aria-live="polite">
-        {messages.length === 0 && (
-          <div className="chat-window__empty">
-            <span className="chat-window__empty-icon" aria-hidden="true">
-              ✦
-            </span>
-            <h2>Start en samtale</h2>
-            <p>Skriv en besked, så hjælper jeg dig gennem den valgte DCR-graf.</p>
-          </div>
-        )}
-        {messages.map((message) => (
-          <Message key={message.id} {...message} />
-        ))}
-        {pendingDraft && (
-          <div className="draft-card">
-            <div>
-              <span className="draft-card__label">Bekræft dit svar</span>
-              <strong>{pendingDraft.proposedValue}</strong>
-              {pendingDraft.explanation && <p>{pendingDraft.explanation}</p>}
+        <div className="chat-window__content">
+          {messages.length === 0 && (
+            <div className="chat-window__empty">
+              <span className="chat-window__empty-icon" aria-hidden="true">
+                ✦
+              </span>
+              <h2>Start en samtale</h2>
+              <p>Skriv en besked, så hjælper jeg dig gennem den valgte DCR-graf.</p>
             </div>
-            <div className="draft-card__actions">
-              <button
-                type="button"
-                className="button button--primary"
-                disabled={disabled}
-                onClick={() => onDraftAction('confirm')}
-              >
-                Ja, fortsæt
-              </button>
-              <button
-                type="button"
-                className="button button--secondary"
-                disabled={disabled}
-                onClick={() => onDraftAction('revise')}
-              >
-                Ret svar
-              </button>
-              <button
-                type="button"
-                className="button button--text"
-                disabled={disabled}
-                onClick={() => onDraftAction('reject')}
-              >
-                Nej
-              </button>
+          )}
+          {messages.map((message) => (
+            <Message key={message.id} {...message} />
+          ))}
+          {pendingDraft && (
+            <div className="draft-card">
+              <div>
+                <span className="draft-card__label">Bekræft dit svar</span>
+                <strong>{pendingDraft.proposedValue}</strong>
+                {pendingDraft.explanation && <p>{pendingDraft.explanation}</p>}
+              </div>
+              <div className="draft-card__actions">
+                <button
+                  type="button"
+                  className="button button--primary"
+                  disabled={disabled}
+                  onClick={() => onDraftAction('confirm')}
+                >
+                  Ja, fortsæt
+                </button>
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  disabled={disabled}
+                  onClick={() => onDraftAction('revise')}
+                >
+                  Ret svar
+                </button>
+                <button
+                  type="button"
+                  className="button button--text"
+                  disabled={disabled}
+                  onClick={() => onDraftAction('reject')}
+                >
+                  Nej
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-        <div ref={endRef} />
+          )}
+          <div ref={endRef} />
+        </div>
       </div>
     </section>
   )
