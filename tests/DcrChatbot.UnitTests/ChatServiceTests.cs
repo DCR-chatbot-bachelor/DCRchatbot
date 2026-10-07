@@ -235,6 +235,36 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task ConfirmDraft_RetryPersistsEachExecutedLabel_SoItIsNotExecutedTwice()
+    {
+        DcrEvent Choice(string id) => new() { Id = id, Label = id + "?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" };
+        DcrEvent Label(string id, bool pending) => new() { Id = id, Label = id, DataType = "label", IsEnabled = true, IsPending = pending };
+
+        var session = await StartSessionAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Label("A", false), Label("B", false)] });
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Label("A", true), Label("B", true)] });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsIn("A", "B"), "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        // Ved næste bekræftelse lykkes A, men B fejler stadig.
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A", "", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id));
+
+        var persisted = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Equal(["B"], persisted!.AnswerLabelsToExecute);
+    }
+
+    [Fact]
     public async Task SendMessage_TypedJa_ConfirmsPendingDraft()
     {
         var graphState = new GraphState

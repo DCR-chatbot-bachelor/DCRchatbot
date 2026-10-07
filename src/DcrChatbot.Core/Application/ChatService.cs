@@ -199,6 +199,8 @@ public sealed class ChatService(
     }
 
     // DCR.Repo kræver en tom streng som værdi for labels; null giver en serverfejl.
+    // Køen gemmes efter hver udført label, så en fejl på en senere label
+    // ikke får en allerede udført label til at blive udført igen.
     private async Task ExecuteQueuedAnswerLabelsAsync(
         ChatSession session, string simulationId, CancellationToken cancellationToken)
     {
@@ -207,6 +209,7 @@ public sealed class ChatService(
             await dcrRepository.ExecuteEventAsync(
                 session.GraphId, simulationId, labelId, string.Empty, cancellationToken);
             session.AnswerLabelsToExecute.Remove(labelId);
+            await sessionStore.SaveSessionAsync(session, cancellationToken);
         }
     }
 
