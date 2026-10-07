@@ -651,6 +651,8 @@
   color: #29443b;
   font-size: 12px;
   line-height: 1.55;
+  /* Bevarer linjeskift, når backend sender flere svar i én besked. */
+  white-space: pre-line;
   background: #f1f7f3;
   border-radius: 4px 14px 14px 14px;
 }

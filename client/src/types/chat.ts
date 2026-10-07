@@ -23,6 +23,13 @@ export interface DcrEvent {
   allowedValues: string[]
 }
 
+export interface ChatMessage {
+  id: string
+  sender: 'user' | 'bot'
+  content: string
+  timestamp: string
+}
+
 export interface PendingAnswer {
   id: string
   eventId: string
