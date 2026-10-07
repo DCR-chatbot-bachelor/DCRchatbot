@@ -265,6 +265,46 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task ConfirmDraft_StateRefreshFails_SessionIsMarkedStale_AndNextMessageRefreshesFirst()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+        var draftResponse = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, draftResponse.PendingDraft!.Id));
+
+        // Eventet er udført, så kladden må ikke blive hængende, men
+        // tilstanden er markeret som forældet.
+        var afterFailure = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterFailure!.PendingAnswersQueue);
+        Assert.True(afterFailure.IsGraphStateStale);
+
+        // Mens DCR stadig er nede, går næste besked ikke videre til LLM'en.
+        llmService.Invocations.Clear();
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" }));
+        llmService.Verify(
+            s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Når DCR svarer igen, hentes tilstanden før matching.
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(graphState);
+        await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        var afterRecovery = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.False(afterRecovery!.IsGraphStateStale);
+    }
+
+    [Fact]
     public async Task SendMessage_TypedJa_ConfirmsPendingDraft()
     {
         var graphState = new GraphState

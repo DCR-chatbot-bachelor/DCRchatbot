@@ -16,6 +16,12 @@ public class ChatSession
     /// Prøves igen ved næste bekræftelse, hvis udførslen fejlede.
     /// </summary>
     public List<string> AnswerLabelsToExecute { get; set; } = new();
+
+    /// <summary>
+    /// Sat når et event er udført i DCR, men grafens nye tilstand endnu ikke
+    /// er hentet. Næste handling skal hente frisk tilstand, før den fortsætter.
+    /// </summary>
+    public bool IsGraphStateStale { get; set; }
     public List<ChatMessage> History { get; set; } = new();
     public DateTime LastUpdatedAt { get; set; } = DateTime.UtcNow;
 }
