@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ChatWindow, type ChatMessage } from "./components/ChatWindow";
-import { getGraphs, sendChatMessage, startChat } from "./api/chatApi";
+import {
+  confirmChatDraft,
+  getGraphs,
+  rejectChatDraft,
+  reviseChatDraft,
+  sendChatMessage,
+  startChat,
+} from "./api/chatApi";
 import type {
   ChatResponse,
   DcrGraph,
@@ -28,6 +35,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingDraft, setPendingDraft] = useState<PendingAnswer | null>(null);
   const [message, setMessage] = useState("");
+  const [isRevisingDraft, setIsRevisingDraft] = useState(false);
   const [loadingGraphs, setLoadingGraphs] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +73,7 @@ function App() {
       setMessages([]);
       setSessionId(null);
       setPendingDraft(null);
+      setIsRevisingDraft(false);
       await applyResponse(response);
     } catch (requestError) {
       setError(
@@ -91,13 +100,20 @@ function App() {
     setSending(true);
     setError(null);
     try {
-      await applyResponse(
-        await sendChatMessage({
-          sessionId,
-          message: trimmedMessage,
-          mode,
-        }),
-      );
+      const response = isRevisingDraft
+        ? await reviseChatDraft({
+            sessionId,
+            message: trimmedMessage,
+            mode,
+            targetPendingAnswerId: pendingDraft?.id,
+          })
+        : await sendChatMessage({
+            sessionId,
+            message: trimmedMessage,
+            mode,
+          });
+      await applyResponse(response);
+      setIsRevisingDraft(false);
     } catch (requestError) {
       setError(
         `Beskeden kunne ikke sendes. ${(requestError as Error).message}`,
@@ -109,18 +125,18 @@ function App() {
 
   async function handleDraftAction(action: "confirm" | "reject" | "revise") {
     if (!sessionId || !pendingDraft || sending) return;
+    if (action === "revise") {
+      setIsRevisingDraft(true);
+      return;
+    }
     setSending(true);
     setError(null);
     try {
-      await applyResponse(
-        await sendChatMessage({
-          sessionId,
-          message: "",
-          mode,
-          action,
-          targetPendingAnswerId: pendingDraft.id,
-        }),
-      );
+      const response =
+        action === "confirm"
+          ? await confirmChatDraft(sessionId, pendingDraft.id)
+          : await rejectChatDraft(sessionId, pendingDraft.id);
+      await applyResponse(response);
     } catch (requestError) {
       setError(
         `Bekræftelsen kunne ikke sendes. ${(requestError as Error).message}`,
@@ -335,6 +351,7 @@ function App() {
               <ChatWindow
                 messages={messages}
                 pendingDraft={pendingDraft}
+                isRevising={isRevisingDraft}
                 disabled={sending}
                 onDraftAction={handleDraftAction}
               />
@@ -350,9 +367,11 @@ function App() {
                   disabled={sending}
                   onChange={(event) => setMessage(event.target.value)}
                   placeholder={
-                    isChatFullscreen
-                      ? "Skriv dit svar her..."
-                      : "Skriv en besked..."
+                    isRevisingDraft
+                      ? "Skriv dit rettede svar..."
+                      : isChatFullscreen
+                        ? "Skriv dit svar her..."
+                        : "Skriv en besked..."
                   }
                   rows={1}
                   onKeyDown={(event) => {

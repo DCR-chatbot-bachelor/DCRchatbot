@@ -53,3 +53,37 @@ export async function sendChatMessage(
     body: JSON.stringify(chatRequest),
   })
 }
+
+export async function confirmChatDraft(
+  sessionId: string,
+  targetPendingAnswerId: string,
+): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/chat/confirm', {
+    method: 'POST',
+    headers: { 'X-Session-Id': sessionId },
+    body: JSON.stringify({ targetPendingAnswerId }),
+  })
+}
+
+export async function rejectChatDraft(
+  sessionId: string,
+  targetPendingAnswerId: string,
+): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/chat/reject', {
+    method: 'POST',
+    headers: { 'X-Session-Id': sessionId },
+    body: JSON.stringify({ targetPendingAnswerId }),
+  })
+}
+
+export async function reviseChatDraft(
+  chatRequest: ChatRequest,
+): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/chat/revise', {
+    method: 'POST',
+    headers: {
+      'X-Session-Id': chatRequest.sessionId ?? '',
+    },
+    body: JSON.stringify(chatRequest),
+  })
+}

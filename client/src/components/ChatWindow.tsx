@@ -12,6 +12,7 @@ export interface ChatMessage {
 interface ChatWindowProps {
   messages: ChatMessage[]
   pendingDraft: PendingAnswer | null
+  isRevising: boolean
   disabled: boolean
   onDraftAction: (action: 'confirm' | 'reject' | 'revise') => void
 }
@@ -19,6 +20,7 @@ interface ChatWindowProps {
 export function ChatWindow({
   messages,
   pendingDraft,
+  isRevising,
   disabled,
   onDraftAction,
 }: ChatWindowProps) {
@@ -77,6 +79,11 @@ export function ChatWindow({
                   Nej
                 </button>
               </div>
+              {isRevising && (
+                <p className="draft-card__hint">
+                  Skriv dit rettede svar i feltet nedenfor.
+                </p>
+              )}
             </div>
           )}
           <div ref={endRef} />
