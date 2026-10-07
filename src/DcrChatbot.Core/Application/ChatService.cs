@@ -130,18 +130,18 @@ public sealed class ChatService(
         // FR-HITL-1: intet event når DCR uden at borgeren først har bekræftet.
         var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
 
-        // Svar fra en tidligere bekræftelse, som ikke nåede at blive udført,
-        // ryddes først, så de ikke tæller med som "allerede pending" nedenfor.
+        // "Pending før" skal beregnes ud fra grafens faktiske tilstand. Svar
+        // fra en tidligere bekræftelse, som ikke nåede at blive udført,
+        // ryddes først, så de ikke tæller med som "allerede pending".
+        await EnsureFreshStateAsync(session, cancellationToken);
         if (session.AnswerLabelsToExecute.Count > 0)
         {
             await ExecuteQueuedAnswerLabelsAsync(session, simulationId, cancellationToken);
+            await EnsureFreshStateAsync(session, cancellationToken);
         }
 
-        // "Pending før" skal beregnes ud fra grafens faktiske tilstand,
-        // ellers kan et gammelt svar blive vist som svar på et nyt spørgsmål.
-        await EnsureFreshStateAsync(session, cancellationToken);
-
-        var pendingLabelsBefore = GetPendingLabels(session.CurrentGraphState).Select(e => e.Id).ToHashSet();
+        var pendingLabelsBefore = GetPendingLabels(session.CurrentGraphState).Select(e => e.Id).ToList();
+        session.PendingLabelsBeforeExecution = pendingLabelsBefore;
         draft.ExecutionStatus = "Executing";
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         try
@@ -152,6 +152,7 @@ public sealed class ChatService(
         catch
         {
             draft.ExecutionStatus = "Pending";
+            session.PendingLabelsBeforeExecution = null;
             await sessionStore.SaveSessionAsync(session, cancellationToken);
             throw;
         }
@@ -165,12 +166,8 @@ public sealed class ChatService(
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         await RefreshStateAsync(session, cancellationToken);
 
-        // FAQ-svaret er de label-events, som udførslen gjorde pending via
-        // response-relationen. Det permanente anker var pending i forvejen
-        // og kommer derfor ikke med.
-        var answers = GetPendingLabels(session.CurrentGraphState)
-            .Where(e => !pendingLabelsBefore.Contains(e.Id))
-            .ToList();
+        var answers = FindNewAnswers(session.CurrentGraphState, pendingLabelsBefore);
+        session.PendingLabelsBeforeExecution = null;
         var reply = answers.Count == 0
             ? "Jeg har desværre ikke et svar på det spørgsmål endnu."
             : string.Join("\n\n", answers.Select(GetAnswerText));
@@ -335,11 +332,30 @@ public sealed class ChatService(
     // at fortsætte på en graf, der ikke længere svarer til DCR.
     private async Task EnsureFreshStateAsync(ChatSession session, CancellationToken cancellationToken)
     {
-        if (session.IsGraphStateStale)
+        if (!session.IsGraphStateStale)
         {
-            await RefreshStateAsync(session, cancellationToken);
+            return;
+        }
+
+        await RefreshStateAsync(session, cancellationToken);
+
+        // Kunne tilstanden ikke hentes lige efter en udførsel, blev svaret
+        // aldrig vist og står stadig som pending. Det sættes i kø og udføres
+        // ved næste bekræftelse, så spørgsmålet kan stilles og besvares igen.
+        if (session.PendingLabelsBeforeExecution is { } before)
+        {
+            session.AnswerLabelsToExecute.AddRange(FindNewAnswers(session.CurrentGraphState, before)
+                .Select(e => e.Id)
+                .Except(session.AnswerLabelsToExecute));
+            session.PendingLabelsBeforeExecution = null;
         }
     }
+
+    // FAQ-svaret er de label-events, som udførslen gjorde pending via
+    // response-relationen. Det permanente anker var pending i forvejen
+    // og kommer derfor ikke med.
+    private static List<DcrEvent> FindNewAnswers(GraphState? state, IReadOnlyCollection<string> pendingBefore) =>
+        GetPendingLabels(state).Where(e => !pendingBefore.Contains(e.Id)).ToList();
 
     private static PendingAnswer FindDraft(ChatSession session, string? pendingAnswerId) =>
         session.PendingAnswersQueue.FirstOrDefault(draft =>

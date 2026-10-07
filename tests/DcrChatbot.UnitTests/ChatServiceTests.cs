@@ -305,6 +305,62 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task ConfirmDraft_AnswerStuckAfterFailedRefresh_IsRecovered_AndDoesNotBlockLaterAnswers()
+    {
+        // Lille fake-DCR: et choice gør sit svar-label pending, og et udført
+        // label er ikke længere pending.
+        var answerFor = new Dictionary<string, string> { ["minSU"] = "A2Copy", ["ansøgning"] = "A2Copy_1" };
+        var pending = new HashSet<string> { "Velkommen" };
+        GraphState CurrentState() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                new DcrEvent { Id = "ansøgning", Label = "ansøgning?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                .. new[] { "Velkommen", "A2Copy", "A2Copy_1" }.Select(id => new DcrEvent
+                {
+                    Id = id, Label = "Svar " + id, DataType = "label", IsEnabled = true, IsPending = pending.Contains(id)
+                })
+            ]
+        };
+        var session = await StartSessionAsync(CurrentState());
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) =>
+            {
+                if (answerFor.TryGetValue(id, out var answer)) pending.Add(answer);
+                else pending.Remove(id);
+            })
+            .ReturnsAsync(true);
+
+        // DCR svarer ikke på tilstands-kaldet lige efter, at minSU er udført.
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id));
+
+        // DCR er oppe igen: det hængende svar findes og udføres, og det næste
+        // spørgsmål får sit eget svar.
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CurrentState);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        var secondAnswer = await service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id);
+        Assert.Equal("Svar A2Copy_1", secondAnswer.Message);
+
+        // Og minSU kan nu stilles igen og får sit svar.
+        SetupLlmMatch("minSU", null);
+        var third = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        var thirdAnswer = await service.ConfirmDraftAsync(session.SessionId, third.PendingDraft!.Id);
+        Assert.Equal("Svar A2Copy", thirdAnswer.Message);
+        Assert.Equal(["Velkommen"], pending);
+    }
+
+    [Fact]
     public async Task SendMessage_TypedJa_ConfirmsPendingDraft()
     {
         var graphState = new GraphState

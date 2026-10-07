@@ -22,6 +22,13 @@ public class ChatSession
     /// er hentet. Næste handling skal hente frisk tilstand, før den fortsætter.
     /// </summary>
     public bool IsGraphStateStale { get; set; }
+
+    /// <summary>
+    /// De labels der var pending, før det seneste choice-event blev udført.
+    /// Gemmes, så svar-labels kan findes igen, hvis den nye tilstand ikke
+    /// kunne hentes lige efter udførslen. Null når intet er i gang.
+    /// </summary>
+    public List<string>? PendingLabelsBeforeExecution { get; set; }
     public List<ChatMessage> History { get; set; } = new();
     public DateTime LastUpdatedAt { get; set; } = DateTime.UtcNow;
 }
