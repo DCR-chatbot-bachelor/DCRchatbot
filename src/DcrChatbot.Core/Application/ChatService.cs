@@ -147,7 +147,8 @@ public sealed class ChatService(
             return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere.");
         }
 
-        var matchedEvent = session.CurrentGraphState!.GetEvent(match.MatchedEventId);
+var matchedEvent = candidates.FirstOrDefault(e =>
+            string.Equals(e.Id, match.MatchedEventId, StringComparison.OrdinalIgnoreCase));
         var validation = EventValidator.Validate(matchedEvent, match.ExtractedValue);
 
         if (!validation.IsValid)
