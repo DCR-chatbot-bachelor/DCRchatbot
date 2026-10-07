@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
@@ -14,6 +16,13 @@ public sealed class GeminiLlmService : ILlmService
     {
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    // Modellen svarer af og til med true eller 42 i stedet for "true"/"42";
+    // det skal ikke vælte hele forespørgslen med en 500.
+    private static readonly JsonSerializerOptions MatchResultJsonOptions = new(JsonOptions)
+    {
+        Converters = { new LenientStringConverter() }
     };
 
     private readonly HttpClient httpClient;
@@ -33,8 +42,17 @@ public sealed class GeminiLlmService : ILlmService
         ArgumentNullException.ThrowIfNull(availableEvents);
         ValidateOptions(options);
 
+        // allowedValues kommer fra samme parsing som EventValidator bruger,
+        // så modellen kun kan foreslå værdier, guardrailen også accepterer.
+        // Description sendes ikke: det er DCR's dokumentationsfelt og kan
+        // indeholde interne noter, som ikke skal ud til en ekstern udbyder.
         var events = availableEvents
-            .Select(dcrEvent => new { id = dcrEvent.Id, label = dcrEvent.Label })
+            .Select(dcrEvent => new
+            {
+                id = dcrEvent.Id,
+                label = dcrEvent.Label,
+                allowedValues = EventValidator.GetChoiceValues(dcrEvent)
+            })
             .ToArray();
         var prompt = $"""
             User message:
@@ -48,6 +66,9 @@ public sealed class GeminiLlmService : ILlmService
             InferredReplies (object mapping event IDs to string values),
             IsFaqQuestion (boolean), UserIntentExplanation (short string).
             MatchedEventId must be null when no available event matches.
+            ExtractedValue must be exactly one of the matched event's allowedValues,
+            or null when the user did not clearly give one of them.
+            All values in ExtractedValue and InferredReplies must be JSON strings.
             """;
 
         var (text, usage) = await SendPromptAsync(
@@ -151,8 +172,14 @@ public sealed class GeminiLlmService : ILlmService
 
         try
         {
-            return JsonSerializer.Deserialize<LlmMatchResult>(json, JsonOptions)
+            var result = JsonSerializer.Deserialize<LlmMatchResult>(json, MatchResultJsonOptions)
                 ?? throw new LlmProviderException("Gemini returned an empty JSON result.");
+            if (result.InferredReplies is null)
+            {
+                result.InferredReplies = new();
+            }
+
+            return result;
         }
         catch (JsonException exception)
         {
@@ -177,6 +204,23 @@ public sealed class GeminiLlmService : ILlmService
         {
             throw new ArgumentOutOfRangeException(nameof(options.MaxOutputTokens));
         }
+    }
+
+    private sealed class LenientStringConverter : JsonConverter<string>
+    {
+        public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                return reader.GetString();
+            }
+
+            using var element = JsonDocument.ParseValue(ref reader);
+            return element.RootElement.GetRawText();
+        }
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value);
     }
 
     private sealed class GeminiRequest

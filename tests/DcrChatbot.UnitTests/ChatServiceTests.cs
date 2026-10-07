@@ -5,6 +5,7 @@ using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.Session;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -23,7 +24,8 @@ public sealed class ChatServiceTests
             dcrRepository.Object,
             llmService.Object,
             sessionStore,
-            Options.Create(new LlmOptions()));
+            Options.Create(new LlmOptions()),
+            NullLogger<ChatService>.Instance);
     }
 
     [Fact]
@@ -71,16 +73,33 @@ public sealed class ChatServiceTests
     }
 
     [Fact]
-    public async Task SendMessage_RejectsDraft_WhenMatchedValueFailsValidation()
+    public async Task SendMessage_DraftUsesGraphsYesValue_RegardlessOfExtractedValue()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+
+        Assert.NotNull(response.PendingDraft);
+        Assert.Equal("ja", response.PendingDraft!.ProposedValue);
+        Assert.Equal("Hvorfor skal jeg bruge minSU?", response.PendingDraft.Question);
+    }
+
+    [Fact]
+    public async Task SendMessage_NoDraft_WhenLlmMatchesUnknownEvent()
     {
         var graphState = new GraphState
         {
             Events = [new DcrEvent { Id = "minSU", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
         };
         var session = await StartSessionAsync(graphState);
-        SetupLlmMatch("minSU", "måske");
+        SetupLlmMatch("opfundet", "ja");
 
-        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "måske?" });
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad med noget andet?" });
 
         Assert.Null(response.PendingDraft);
     }
@@ -156,6 +175,242 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     Assert.Empty(sessionAfter!.PendingAnswersQueue);
 }
 
+    [Fact]
+    public async Task ConfirmDraft_ShowsNewlyPendingLabelAsAnswer_AndLeavesAnchorAlone()
+    {
+        DcrEvent Choice() => new() { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" };
+        DcrEvent Answer(bool pending) => new() { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", IsEnabled = true, IsPending = pending };
+        DcrEvent Anchor() => new() { Id = "Velkommen", Label = "Velkommen til chatbotten", DataType = "label", IsEnabled = true, IsPending = true };
+
+        var session = await StartSessionAsync(new GraphState { Events = [Choice(), Answer(false), Anchor()] });
+        SetupLlmMatch("minSU", null);
+        var draftResponse = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .SetupSequence(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState { Events = [Choice(), Answer(true), Anchor()] })
+            .ReturnsAsync(new GraphState { Events = [Choice(), Answer(false), Anchor()] });
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, draftResponse.PendingDraft!.Id);
+
+        Assert.Equal("På minSU kan du følge med i din SU.", response.Message);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "minSU", "ja", It.IsAny<CancellationToken>()), Times.Once);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()), Times.Once);
+        dcrRepository.Verify(r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "Velkommen", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_LabelExecutionFails_StillShowsAnswer_AndRetriesOnNextConfirm()
+    {
+        DcrEvent Choice(string id) => new() { Id = id, Label = id + "?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" };
+        DcrEvent Answer(bool pending) => new() { Id = "A2Copy", Label = "Svaret.", Description = "Intern note", DataType = "label", IsEnabled = true, IsPending = pending };
+
+        var session = await StartSessionAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Answer(false)] });
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Answer(true)] });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        Assert.Equal("Svaret.", response.Message);
+        Assert.Null(response.PendingDraft);
+        var afterFailure = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterFailure!.PendingAnswersQueue);
+        Assert.Equal(["A2Copy"], afterFailure.AnswerLabelsToExecute);
+
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        await service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id);
+
+        var afterRetry = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterRetry!.AnswerLabelsToExecute);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "ansøgning", "ja", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_RetryPersistsEachExecutedLabel_SoItIsNotExecutedTwice()
+    {
+        DcrEvent Choice(string id) => new() { Id = id, Label = id + "?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" };
+        DcrEvent Label(string id, bool pending) => new() { Id = id, Label = id, DataType = "label", IsEnabled = true, IsPending = pending };
+
+        var session = await StartSessionAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Label("A", false), Label("B", false)] });
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Label("A", true), Label("B", true)] });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsIn("A", "B"), "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        // Ved næste bekræftelse lykkes A, men B fejler stadig.
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A", "", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id));
+
+        var persisted = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Equal(["B"], persisted!.AnswerLabelsToExecute);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_StateRefreshFails_SessionIsMarkedStale_AndNextMessageRefreshesFirst()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+        var draftResponse = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, draftResponse.PendingDraft!.Id));
+
+        // Eventet er udført, så kladden må ikke blive hængende, men
+        // tilstanden er markeret som forældet.
+        var afterFailure = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterFailure!.PendingAnswersQueue);
+        Assert.True(afterFailure.IsGraphStateStale);
+
+        // Mens DCR stadig er nede, går næste besked ikke videre til LLM'en.
+        llmService.Invocations.Clear();
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" }));
+        llmService.Verify(
+            s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Når DCR svarer igen, hentes tilstanden før matching.
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(graphState);
+        await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        var afterRecovery = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.False(afterRecovery!.IsGraphStateStale);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_AnswerStuckAfterFailedRefresh_IsRecovered_AndDoesNotBlockLaterAnswers()
+    {
+        // Lille fake-DCR: et choice gør sit svar-label pending, og et udført
+        // label er ikke længere pending.
+        var answerFor = new Dictionary<string, string> { ["minSU"] = "A2Copy", ["ansøgning"] = "A2Copy_1" };
+        var pending = new HashSet<string> { "Velkommen" };
+        GraphState CurrentState() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                new DcrEvent { Id = "ansøgning", Label = "ansøgning?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                .. new[] { "Velkommen", "A2Copy", "A2Copy_1" }.Select(id => new DcrEvent
+                {
+                    Id = id, Label = "Svar " + id, DataType = "label", IsEnabled = true, IsPending = pending.Contains(id)
+                })
+            ]
+        };
+        var session = await StartSessionAsync(CurrentState());
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) =>
+            {
+                if (answerFor.TryGetValue(id, out var answer)) pending.Add(answer);
+                else pending.Remove(id);
+            })
+            .ReturnsAsync(true);
+
+        // DCR svarer ikke på tilstands-kaldet lige efter, at minSU er udført.
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id));
+
+        // DCR er oppe igen: det hængende svar findes og udføres, og det næste
+        // spørgsmål får sit eget svar.
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CurrentState);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        var secondAnswer = await service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id);
+        Assert.Equal("Svar A2Copy_1", secondAnswer.Message);
+
+        // Og minSU kan nu stilles igen og får sit svar.
+        SetupLlmMatch("minSU", null);
+        var third = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        var thirdAnswer = await service.ConfirmDraftAsync(session.SessionId, third.PendingDraft!.Id);
+        Assert.Equal("Svar A2Copy", thirdAnswer.Message);
+        Assert.Equal(["Velkommen"], pending);
+    }
+
+    [Fact]
+    public async Task SendMessage_TypedJa_ConfirmsPendingDraft()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+        await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Ja!" });
+
+        Assert.Null(response.PendingDraft);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "minSU", "ja", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessage_TypedNej_RejectsPendingDraft_WithoutExecuting()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+        await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "nej" });
+
+        Assert.Null(response.PendingDraft);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SendMessage_OtherTextWhileDraftPending_ThrowsConflict()
+    {
+        var graphState = new GraphState
+        {
+            Events = [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" }]
+        };
+        var session = await StartSessionAsync(graphState);
+        SetupLlmMatch("minSU", null);
+        await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+
+        await Assert.ThrowsAsync<ChatConflictException>(() =>
+            service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad med boligstøtte?" }));
+    }
+
     private async Task<ChatSession> StartSessionAsync(GraphState graphState)
     {
         dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -167,7 +422,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         return (await sessionStore.GetSessionAsync(response.SessionId))!;
     }
 
-    private void SetupLlmMatch(string eventId, string value) =>
+    private void SetupLlmMatch(string eventId, string? value) =>
         llmService
             .Setup(s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((new LlmMatchResult { MatchedEventId = eventId, ExtractedValue = value }, new TokenUsageResult()));
