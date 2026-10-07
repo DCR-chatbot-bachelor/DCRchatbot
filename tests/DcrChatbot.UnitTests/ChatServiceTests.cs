@@ -5,6 +5,7 @@ using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.Session;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -23,7 +24,8 @@ public sealed class ChatServiceTests
             dcrRepository.Object,
             llmService.Object,
             sessionStore,
-            Options.Create(new LlmOptions()));
+            Options.Create(new LlmOptions()),
+            NullLogger<ChatService>.Instance);
     }
 
     [Fact]
@@ -194,6 +196,42 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "minSU", "ja", It.IsAny<CancellationToken>()), Times.Once);
         dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()), Times.Once);
         dcrRepository.Verify(r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "Velkommen", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_LabelExecutionFails_StillShowsAnswer_AndRetriesOnNextConfirm()
+    {
+        DcrEvent Choice(string id) => new() { Id = id, Label = id + "?", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" };
+        DcrEvent Answer(bool pending) => new() { Id = "A2Copy", Label = "Svaret.", Description = "Intern note", DataType = "label", IsEnabled = true, IsPending = pending };
+
+        var session = await StartSessionAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Answer(false)] });
+        SetupLlmMatch("minSU", null);
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState { Events = [Choice("minSU"), Choice("ansøgning"), Answer(true)] });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        Assert.Equal("Svaret.", response.Message);
+        Assert.Null(response.PendingDraft);
+        var afterFailure = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterFailure!.PendingAnswersQueue);
+        Assert.Equal(["A2Copy"], afterFailure.AnswerLabelsToExecute);
+
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A2Copy", "", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        SetupLlmMatch("ansøgning", null);
+        var second = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "ansøgning?" });
+        await service.ConfirmDraftAsync(session.SessionId, second.PendingDraft!.Id);
+
+        var afterRetry = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(afterRetry!.AnswerLabelsToExecute);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "ansøgning", "ja", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
