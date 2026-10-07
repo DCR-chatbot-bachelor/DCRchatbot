@@ -65,6 +65,42 @@ public sealed class GeminiLlmServiceTests
     }
 
     [Fact]
+    public async Task ExtractIntentAsync_SendsAllowedChoiceValuesInPrompt()
+    {
+        var handler = new RecordingHandler(_ => GeminiResponse(
+            "{\"MatchedEventId\":\"minSU\",\"ExtractedValue\":\"ja\",\"InferredReplies\":{}," +
+            "\"IsFaqQuestion\":false,\"UserIntentExplanation\":\"\"}"));
+        var service = CreateService(handler);
+
+        await service.ExtractIntentAsync(
+            "Ja, jeg skal bruge minSU",
+            [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", ChoiceValues = "Ja (ja), Nej (nej)" }],
+            CreateOptions());
+
+        using var requestBody = JsonDocument.Parse(handler.LastBody!);
+        var prompt = requestBody.RootElement
+            .GetProperty("contents")[0]
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString();
+        Assert.Contains("\"allowedValues\":[\"ja\",\"nej\"]", prompt);
+    }
+
+    [Fact]
+    public async Task ExtractIntentAsync_ToleratesNonStringValuesAndNullInferredReplies()
+    {
+        var service = CreateService(new RecordingHandler(_ => GeminiResponse(
+            "{\"MatchedEventId\":\"minSU\",\"ExtractedValue\":true,\"InferredReplies\":null," +
+            "\"IsFaqQuestion\":false,\"UserIntentExplanation\":\"\"}")));
+
+        var (result, _) = await service.ExtractIntentAsync("ja", [], CreateOptions());
+
+        Assert.Equal("minSU", result.MatchedEventId);
+        Assert.Equal("true", result.ExtractedValue);
+        Assert.Empty(result.InferredReplies);
+    }
+
+    [Fact]
     public async Task ExtractIntentAsync_ThrowsForProviderError()
     {
         var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)

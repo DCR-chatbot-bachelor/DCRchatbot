@@ -48,11 +48,18 @@ export function ChatWindow({
           ))}
           {pendingDraft && (
             <div className="draft-card">
-              <div>
-                <span className="draft-card__label">Bekræft dit svar</span>
-                <strong>{pendingDraft.proposedValue}</strong>
-                {pendingDraft.explanation && <p>{pendingDraft.explanation}</p>}
-              </div>
+              {pendingDraft.question ? (
+                <div>
+                  <span className="draft-card__label">Spørger du om </span>
+                  <strong>{pendingDraft.question}</strong>
+                </div>
+              ) : (
+                <div>
+                  <span className="draft-card__label">Bekræft dit svar</span>
+                  <strong>{pendingDraft.proposedValue}</strong>
+                  {pendingDraft.explanation && <p>{pendingDraft.explanation}</p>}
+                </div>
+              )}
               <div className="draft-card__actions">
                 <button
                   type="button"

@@ -26,6 +26,7 @@ export interface DcrEvent {
 export interface PendingAnswer {
   id: string
   eventId: string
+  question?: string | null
   proposedValue: string
   explanation?: string | null
   isConfirmed: boolean

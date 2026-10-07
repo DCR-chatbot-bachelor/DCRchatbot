@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using DcrChatbot.Core.Application;
+using DcrChatbot.Infrastructure.LlmProviders;
 
 namespace DcrChatbot.WebApi.Middleware;
 
@@ -26,7 +27,16 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
             ArgumentException => (int)HttpStatusCode.BadRequest,
             KeyNotFoundException => (int)HttpStatusCode.NotFound,
             ChatConflictException => (int)HttpStatusCode.Conflict,
+            LlmProviderException => (int)HttpStatusCode.BadGateway,
             _ => (int)HttpStatusCode.InternalServerError
+        };
+
+        // Interne fejlbeskeder (fx rå svar fra Gemini) vises ikke for borgeren.
+        var detail = exception switch
+        {
+            LlmProviderException => "Sprogmodellen svarede ikke korrekt. Prøv igen.",
+            _ when statusCode == 500 => "Prøv igen senere.",
+            _ => exception.Message
         };
 
         context.Response.StatusCode = statusCode;
@@ -36,7 +46,7 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
             type = "https://httpstatuses.com/" + statusCode,
             title = statusCode == 500 ? "Der opstod en intern fejl." : "Anmodningen kunne ikke behandles.",
             status = statusCode,
-            detail = statusCode == 500 ? "Prøv igen senere." : exception.Message
+            detail
         }));
     }
 }

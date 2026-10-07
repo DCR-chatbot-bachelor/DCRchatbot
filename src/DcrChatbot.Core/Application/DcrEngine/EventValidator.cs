@@ -97,7 +97,8 @@ public static class EventValidator
     // rettet til at skille label og værdi ad (se issuet om ReadStringArray).
     // Når den rettes, kan denne metode fjernes og erstattes med
     // dcrEvent.AllowedValues.Select(o => o.Value).
-    private static IReadOnlyList<string> GetChoiceValues(DcrEvent dcrEvent)
+    // Offentlig, så LLM-prompten og ChatService bruger præcis de samme gyldige værdier.
+    public static IReadOnlyList<string> GetChoiceValues(DcrEvent dcrEvent)
     {
         if (string.IsNullOrWhiteSpace(dcrEvent.ChoiceValues))
         {
