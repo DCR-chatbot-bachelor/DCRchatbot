@@ -129,7 +129,8 @@ function App() {
       setIsRevisingDraft(true);
       return;
     }
-    setSending(true);
+setIsRevisingDraft(false);
+    setSending(true)
     setError(null);
     try {
       const response =
