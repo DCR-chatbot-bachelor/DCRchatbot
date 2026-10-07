@@ -135,8 +135,11 @@ public sealed class ChatService(
         if (session.AnswerLabelsToExecute.Count > 0)
         {
             await ExecuteQueuedAnswerLabelsAsync(session, simulationId, cancellationToken);
-            await RefreshStateAsync(session, cancellationToken);
         }
+
+        // "Pending før" skal beregnes ud fra grafens faktiske tilstand,
+        // ellers kan et gammelt svar blive vist som svar på et nyt spørgsmål.
+        await EnsureFreshStateAsync(session, cancellationToken);
 
         var pendingLabelsBefore = GetPendingLabels(session.CurrentGraphState).Select(e => e.Id).ToHashSet();
         draft.ExecutionStatus = "Executing";
@@ -155,8 +158,10 @@ public sealed class ChatService(
 
         // Choice-eventet er nu udført i DCR. Gem det med det samme, så en
         // senere fejl ikke efterlader kladden som "Executing" for evigt.
+        // Tilstanden markeres som forældet, indtil den nye er hentet.
         draft.ExecutionStatus = "Executed";
         session.PendingAnswersQueue.Remove(draft);
+        session.IsGraphStateStale = true;
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         await RefreshStateAsync(session, cancellationToken);
 
@@ -190,9 +195,18 @@ public sealed class ChatService(
                 session.SessionId);
         }
 
-        if (answers.Count > 0)
+        // Borgeren har fået svaret; kan den nye tilstand ikke hentes nu,
+        // forbliver den markeret som forældet og hentes ved næste handling.
+        try
         {
-            await RefreshStateAsync(session, cancellationToken);
+            await EnsureFreshStateAsync(session, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Kunne ikke hente grafens tilstand i session {SessionId}; hentes ved næste handling.",
+                session.SessionId);
         }
 
         return ToResponse(session, reply);
@@ -204,6 +218,13 @@ public sealed class ChatService(
     private async Task ExecuteQueuedAnswerLabelsAsync(
         ChatSession session, string simulationId, CancellationToken cancellationToken)
     {
+        if (session.AnswerLabelsToExecute.Count == 0)
+        {
+            return;
+        }
+
+        session.IsGraphStateStale = true;
+        await sessionStore.SaveSessionAsync(session, cancellationToken);
         foreach (var labelId in session.AnswerLabelsToExecute.ToList())
         {
             await dcrRepository.ExecuteEventAsync(
@@ -216,6 +237,7 @@ public sealed class ChatService(
     private async Task<ChatResponse> CreateDraftAsync(
         ChatSession session, string message, CancellationToken cancellationToken)
     {
+        await EnsureFreshStateAsync(session, cancellationToken);
         var candidates = GetCandidateEvents(session.CurrentGraphState);
         if (candidates.Count == 0)
         {
@@ -305,6 +327,17 @@ public sealed class ChatService(
         {
             session.CurrentGraphState = await dcrRepository.GetGraphStateAsync(
                 session.GraphId, session.SimulationId, cancellationToken);
+            session.IsGraphStateStale = false;
+        }
+    }
+
+    // Kaster videre, hvis tilstanden ikke kan hentes: hellere en fejl end
+    // at fortsætte på en graf, der ikke længere svarer til DCR.
+    private async Task EnsureFreshStateAsync(ChatSession session, CancellationToken cancellationToken)
+    {
+        if (session.IsGraphStateStale)
+        {
+            await RefreshStateAsync(session, cancellationToken);
         }
     }
 

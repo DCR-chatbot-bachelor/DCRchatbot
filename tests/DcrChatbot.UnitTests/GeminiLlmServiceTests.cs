@@ -65,7 +65,7 @@ public sealed class GeminiLlmServiceTests
     }
 
     [Fact]
-    public async Task ExtractIntentAsync_SendsAllowedChoiceValuesInPrompt()
+    public async Task ExtractIntentAsync_SendsAllowedValues_ButNotInternalDescription()
     {
         var handler = new RecordingHandler(_ => GeminiResponse(
             "{\"MatchedEventId\":\"minSU\",\"ExtractedValue\":\"ja\",\"InferredReplies\":{}," +
@@ -74,7 +74,7 @@ public sealed class GeminiLlmServiceTests
 
         await service.ExtractIntentAsync(
             "Ja, jeg skal bruge minSU",
-            [new DcrEvent { Id = "minSU", Label = "minSU?", DataType = "choice", ChoiceValues = "Ja (ja), Nej (nej)" }],
+            [new DcrEvent { Id = "minSU", Label = "minSU?", Description = "Intern note", DataType = "choice", ChoiceValues = "Ja (ja), Nej (nej)" }],
             CreateOptions());
 
         using var requestBody = JsonDocument.Parse(handler.LastBody!);
@@ -84,6 +84,7 @@ public sealed class GeminiLlmServiceTests
             .GetProperty("text")
             .GetString();
         Assert.Contains("\"allowedValues\":[\"ja\",\"nej\"]", prompt);
+        Assert.DoesNotContain("Intern note", handler.LastBody);
     }
 
     [Fact]

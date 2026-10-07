@@ -44,12 +44,13 @@ public sealed class GeminiLlmService : ILlmService
 
         // allowedValues kommer fra samme parsing som EventValidator bruger,
         // så modellen kun kan foreslå værdier, guardrailen også accepterer.
+        // Description sendes ikke: det er DCR's dokumentationsfelt og kan
+        // indeholde interne noter, som ikke skal ud til en ekstern udbyder.
         var events = availableEvents
             .Select(dcrEvent => new
             {
                 id = dcrEvent.Id,
                 label = dcrEvent.Label,
-                description = dcrEvent.Description,
                 allowedValues = EventValidator.GetChoiceValues(dcrEvent)
             })
             .ToArray();
