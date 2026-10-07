@@ -3,6 +3,7 @@ using DcrChatbot.Core.Application.Dtos;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DcrChatbot.Core.Application;
@@ -11,7 +12,8 @@ public sealed class ChatService(
     IDcrRepository dcrRepository,
     ILlmService llmService,
     ISessionStore sessionStore,
-    IOptions<LlmOptions> llmOptions) : IChatService
+    IOptions<LlmOptions> llmOptions,
+    ILogger<ChatService> logger) : IChatService
 {
     private readonly LlmOptions llmOptions = llmOptions.Value;
 
@@ -127,6 +129,15 @@ public sealed class ChatService(
 
         // FR-HITL-1: intet event når DCR uden at borgeren først har bekræftet.
         var simulationId = RequireValue(session.SimulationId, "Sessionen mangler en DCR-simulation.");
+
+        // Svar fra en tidligere bekræftelse, som ikke nåede at blive udført,
+        // ryddes først, så de ikke tæller med som "allerede pending" nedenfor.
+        if (session.AnswerLabelsToExecute.Count > 0)
+        {
+            await ExecuteQueuedAnswerLabelsAsync(session, simulationId, cancellationToken);
+            await RefreshStateAsync(session, cancellationToken);
+        }
+
         var pendingLabelsBefore = GetPendingLabels(session.CurrentGraphState).Select(e => e.Id).ToHashSet();
         draft.ExecutionStatus = "Executing";
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -142,22 +153,41 @@ public sealed class ChatService(
             throw;
         }
 
+        // Choice-eventet er nu udført i DCR. Gem det med det samme, så en
+        // senere fejl ikke efterlader kladden som "Executing" for evigt.
         draft.ExecutionStatus = "Executed";
         session.PendingAnswersQueue.Remove(draft);
+        await sessionStore.SaveSessionAsync(session, cancellationToken);
         await RefreshStateAsync(session, cancellationToken);
 
         // FAQ-svaret er de label-events, som udførslen gjorde pending via
         // response-relationen. Det permanente anker var pending i forvejen
-        // og kommer derfor ikke med. Svarene udføres bagefter, så samme
-        // spørgsmål kan stilles igen og svaret vises på ny. DCR.Repo kræver
-        // en tom streng som værdi for labels; null giver en serverfejl.
+        // og kommer derfor ikke med.
         var answers = GetPendingLabels(session.CurrentGraphState)
             .Where(e => !pendingLabelsBefore.Contains(e.Id))
             .ToList();
-        foreach (var answer in answers)
+        var reply = answers.Count == 0
+            ? "Jeg har desværre ikke et svar på det spørgsmål endnu."
+            : string.Join("\n\n", answers.Select(GetAnswerText));
+        session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+
+        // Svarene udføres, så samme spørgsmål kan stilles igen og svaret
+        // vises på ny. De sættes i kø og gemmes først: fejler udførslen,
+        // har borgeren stadig fået svaret, og køen prøves igen ved næste
+        // bekræftelse.
+        session.AnswerLabelsToExecute.AddRange(answers.Select(e => e.Id));
+        await sessionStore.SaveSessionAsync(session, cancellationToken);
+        try
         {
-            await dcrRepository.ExecuteEventAsync(
-                session.GraphId, simulationId, answer.Id, string.Empty, cancellationToken);
+            await ExecuteQueuedAnswerLabelsAsync(session, simulationId, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Kunne ikke udføre svar-labels {LabelIds} i session {SessionId}; prøves igen ved næste bekræftelse.",
+                session.AnswerLabelsToExecute,
+                session.SessionId);
         }
 
         if (answers.Count > 0)
@@ -165,11 +195,19 @@ public sealed class ChatService(
             await RefreshStateAsync(session, cancellationToken);
         }
 
-        var reply = answers.Count == 0
-            ? "Jeg har desværre ikke et svar på det spørgsmål endnu."
-            : string.Join("\n\n", answers.Select(GetAnswerText));
-        session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
         return ToResponse(session, reply);
+    }
+
+    // DCR.Repo kræver en tom streng som værdi for labels; null giver en serverfejl.
+    private async Task ExecuteQueuedAnswerLabelsAsync(
+        ChatSession session, string simulationId, CancellationToken cancellationToken)
+    {
+        foreach (var labelId in session.AnswerLabelsToExecute.ToList())
+        {
+            await dcrRepository.ExecuteEventAsync(
+                session.GraphId, simulationId, labelId, string.Empty, cancellationToken);
+            session.AnswerLabelsToExecute.Remove(labelId);
+        }
     }
 
     private async Task<ChatResponse> CreateDraftAsync(
@@ -239,10 +277,9 @@ public sealed class ChatService(
         state?.EnabledEvents.Where(e =>
             e.IsPending && string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)) ?? [];
 
-    // I FAQ-graferne står svarteksten i label-eventets label; en
-    // eventuel beskrivelse foretrækkes, hvis grafen har en.
-    private static string GetAnswerText(DcrEvent dcrEvent) =>
-        string.IsNullOrWhiteSpace(dcrEvent.Description) ? dcrEvent.Label : dcrEvent.Description;
+    // I FAQ-graferne er label-eventets label selve svarteksten. Description
+    // er DCR's dokumentationsfelt og kan indeholde interne noter.
+    private static string GetAnswerText(DcrEvent dcrEvent) => dcrEvent.Label;
 
     private static string ToCitizenMessage(EventValidationError error) => error switch
     {

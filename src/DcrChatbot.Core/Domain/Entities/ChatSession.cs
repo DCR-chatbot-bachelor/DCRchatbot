@@ -10,6 +10,12 @@ public class ChatSession
     public string? SimulationId { get; set; }
     public GraphState? CurrentGraphState { get; set; }
     public List<PendingAnswer> PendingAnswersQueue { get; set; } = new();
+
+    /// <summary>
+    /// Svar-labels der er vist for borgeren, men endnu ikke udført i DCR.
+    /// Prøves igen ved næste bekræftelse, hvis udførslen fejlede.
+    /// </summary>
+    public List<string> AnswerLabelsToExecute { get; set; } = new();
     public List<ChatMessage> History { get; set; } = new();
     public DateTime LastUpdatedAt { get; set; } = DateTime.UtcNow;
 }
