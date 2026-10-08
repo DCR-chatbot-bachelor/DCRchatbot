@@ -18,7 +18,7 @@ export function DraftConfirmation({
     <div className="draft-card">
       {draft.question ? (
         <div>
-          <span className="draft-card__label">Spørger du om</span>
+          <span className="draft-card__label">Spørger du om </span>
           <strong>{draft.question}</strong>
         </div>
       ) : (
