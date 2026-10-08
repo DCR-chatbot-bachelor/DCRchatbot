@@ -44,7 +44,11 @@ export function useChatSession() {
   function applyResponse(response: ChatResponse) {
     setSessionId(response.sessionId);
     setPendingDraft(response.pendingDraft ?? null);
-    addMessage("bot", response.message);
+    // The draft card already renders the confirmation question. Avoid
+    // displaying the same question again as a normal chat bubble.
+    if (!response.pendingDraft) {
+      addMessage("bot", response.message);
+    }
   }
 
   async function run(

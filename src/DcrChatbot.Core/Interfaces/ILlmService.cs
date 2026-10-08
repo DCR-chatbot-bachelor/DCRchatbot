@@ -13,6 +13,24 @@ public class TokenUsageResult
 
 public interface ILlmService
 {
+    Task<(string? MatchedEventId, TokenUsageResult TokenUsage)> MatchEventAsync(
+        string userMessage,
+        IEnumerable<DcrEvent> availableEvents,
+        LlmOptions options,
+        CancellationToken cancellationToken = default);
+
+    Task<(string? ExtractedValue, string Explanation, TokenUsageResult TokenUsage)> ExtractValueAsync(
+        string userMessage,
+        DcrEvent matchedEvent,
+        LlmOptions options,
+        CancellationToken cancellationToken = default);
+
+    Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(
+        string userMessage,
+        PendingAnswer draft,
+        LlmOptions options,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Trækker intention og værdier ud af borgerens fritekst som et struktureret objekt (FR-LLM-2, NFR-4).
     /// </summary>

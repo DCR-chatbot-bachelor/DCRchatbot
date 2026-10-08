@@ -38,6 +38,7 @@ export interface PendingAnswer {
   explanation?: string | null
   isConfirmed: boolean
   isAutoInferred: boolean
+  isEventMatch: boolean
 }
 
 export interface ChatRequest {

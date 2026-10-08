@@ -11,5 +11,6 @@ public class PendingAnswer
     public string? Explanation { get; set; }
     public bool IsConfirmed { get; set; }
     public bool IsAutoInferred { get; set; }
+    public bool IsEventMatch { get; set; }
     public string ExecutionStatus { get; set; } = "Pending";
 }

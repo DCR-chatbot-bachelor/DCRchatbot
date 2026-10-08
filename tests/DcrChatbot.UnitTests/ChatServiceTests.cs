@@ -43,9 +43,9 @@ public sealed class ChatServiceTests
 
         IEnumerable<DcrEvent>? offeredCandidates = null;
         llmService
-            .Setup(s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
             .Callback<string, IEnumerable<DcrEvent>, LlmOptions, CancellationToken>((_, candidates, _, _) => offeredCandidates = candidates)
-            .ReturnsAsync((new LlmMatchResult(), new TokenUsageResult()));
+            .ReturnsAsync(((string?)"minSU", new TokenUsageResult()));
 
         await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hej" });
 
@@ -153,6 +153,66 @@ public async Task SendMessage_CanAskMultipleQuestionsInSequence()
     Assert.NotNull(second.PendingDraft);
     Assert.Equal("ansøgning", second.PendingDraft!.EventId);
 }
+
+    [Fact]
+    public async Task ConfirmDraft_ShowsNextPendingFormEvent()
+    {
+        var firstEvent = new DcrEvent
+        {
+            Id = "country",
+            Label = "Hvilket land er du i?",
+            DataType = "text",
+            IsEnabled = true,
+            IsPending = true,
+            Sequence = 1
+        };
+        var secondEvent = new DcrEvent
+        {
+            Id = "age",
+            Label = "Hvor gammel er du?",
+            DataType = "integer",
+            IsEnabled = true,
+            IsPending = false,
+            Sequence = 2
+        };
+        var session = await StartSessionAsync(new GraphState { Events = [firstEvent, secondEvent] });
+        SetupLlmMatch("country", "Danmark");
+
+        var draft = await service.SendMessageAsync(
+            session.SessionId,
+            new ChatRequest { Message = "Jeg bor i Danmark" });
+
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                Events =
+                [
+                    new DcrEvent
+                    {
+                        Id = "country",
+                        Label = firstEvent.Label,
+                        DataType = "text",
+                        IsEnabled = true,
+                        IsExecuted = true,
+                        Sequence = 1
+                    },
+                    new DcrEvent
+                    {
+                        Id = "age",
+                        Label = secondEvent.Label,
+                        DataType = "integer",
+                        IsEnabled = true,
+                        IsPending = true,
+                        Sequence = 2
+                    }
+                ]
+            });
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Contains("Hvor gammel er du?", response.Message);
+    }
 
 [Fact]
 public async Task RejectDraft_DoesNotExecuteEvent()
@@ -292,7 +352,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         await Assert.ThrowsAsync<HttpRequestException>(() =>
             service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" }));
         llmService.Verify(
-            s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
         // Når DCR svarer igen, hentes tilstanden før matching.
@@ -407,8 +467,40 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         SetupLlmMatch("minSU", null);
         await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
 
-        await Assert.ThrowsAsync<ChatConflictException>(() =>
-            service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad med boligstøtte?" }));
+    [Fact]
+    public async Task ConfirmDraft_WhenNoMorePendingEvents_ShowsConclusionWithDisplayValue()
+    {
+        var finalQuestion = new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsPending = true };
+        var conclusion = new DcrEvent
+        {
+            Id = "A4",
+            Label = "Conclusion",
+            Value = "Can you buy alcohol? Yes",
+            DisplayValue = "Can you buy alcohol? Yes",
+            DataType = "label",
+            IsEnabled = true,
+            IsPending = false
+        };
+
+        var session = await StartSessionAsync(new GraphState { Events = [finalQuestion, conclusion] });
+        SetupLlmMatch("height", "180");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "180" });
+
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                IsAccepting = true,
+                Events = [
+                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, IsPending = false },
+                    conclusion
+                ]
+            });
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Can you buy alcohol? Yes", response.Message);
+        Assert.True(response.IsEnded);
     }
 
     private async Task<ChatSession> StartSessionAsync(GraphState graphState)
@@ -422,8 +514,37 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         return (await sessionStore.GetSessionAsync(response.SessionId))!;
     }
 
-    private void SetupLlmMatch(string eventId, string? value) =>
+    private void SetupLlmMatch(string eventId, string? value)
+    {
         llmService
-            .Setup(s => s.ExtractIntentAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((new LlmMatchResult { MatchedEventId = eventId, ExtractedValue = value }, new TokenUsageResult()));
+            .Setup(s => s.MatchEventAsync(
+                It.IsAny<string>(),
+                It.IsAny<IEnumerable<DcrEvent>>(),
+                It.IsAny<LlmOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((eventId, new TokenUsageResult()));
+        llmService
+            .Setup(s => s.ExtractValueAsync(
+                It.IsAny<string>(),
+                It.IsAny<DcrEvent>(),
+                It.IsAny<LlmOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((value, "Extracted by test", new TokenUsageResult()));
+        llmService
+            .Setup(s => s.ClassifyConfirmationAsync(
+                It.IsAny<string>(),
+                It.IsAny<PendingAnswer>(),
+                It.IsAny<LlmOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns((string message, PendingAnswer _, LlmOptions _, CancellationToken _) =>
+            {
+                var normalized = message.Trim().TrimEnd('.', '!', '?').Trim();
+                bool? result = normalized.StartsWith("nej", StringComparison.OrdinalIgnoreCase)
+                    ? false
+                    : normalized.StartsWith("ja", StringComparison.OrdinalIgnoreCase)
+                        ? true
+                        : null;
+                return Task.FromResult((result, new TokenUsageResult()));
+            });
+    }
 }

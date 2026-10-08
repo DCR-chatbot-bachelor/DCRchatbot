@@ -32,6 +32,114 @@ public sealed class GeminiLlmService : ILlmService
         this.httpClient = httpClient;
     }
 
+    public async Task<(string? MatchedEventId, TokenUsageResult TokenUsage)> MatchEventAsync(
+        string userMessage,
+        IEnumerable<DcrEvent> availableEvents,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        var events = availableEvents.Select(dcrEvent => new
+        {
+            id = dcrEvent.Id,
+            label = dcrEvent.Label
+        }).ToArray();
+        var prompt = $"""
+            User message:
+            {userMessage}
+
+            Available events:
+            {JsonSerializer.Serialize(events)}
+
+            Identify which available event the user is talking about.
+            Do not extract or infer any value from the message.
+            Return only JSON with exactly one field:
+            MatchedEventId (string or null).
+            """;
+
+        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        using var document = JsonDocument.Parse(text);
+        var matchedEventId = document.RootElement.TryGetProperty("MatchedEventId", out var value)
+            ? value.GetString()
+            : document.RootElement.TryGetProperty("matchedEventId", out value)
+                ? value.GetString()
+                : null;
+        return (matchedEventId, usage);
+    }
+
+    public async Task<(string? ExtractedValue, string Explanation, TokenUsageResult TokenUsage)> ExtractValueAsync(
+        string userMessage,
+        DcrEvent matchedEvent,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        var prompt = $"""
+            User message:
+            {userMessage}
+
+            Event:
+            {JsonSerializer.Serialize(new
+            {
+                id = matchedEvent.Id,
+                label = matchedEvent.Label,
+                dataType = matchedEvent.DataType,
+                allowedValues = EventValidator.GetChoiceValues(matchedEvent)
+            })}
+
+            Extract only the value that answers this event. For example,
+            "Jeg er 18 år" for an integer event returns "18".
+            Return only JSON with exactly these fields:
+            ExtractedValue (string or null), Explanation (short string).
+            """;
+
+        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        var result = JsonSerializer.Deserialize<LlmValueResult>(text, MatchResultJsonOptions)
+            ?? throw new LlmProviderException("Gemini returned an empty value result.");
+        return (result.ExtractedValue, result.Explanation, usage);
+    }
+
+    public async Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(
+        string userMessage,
+        PendingAnswer draft,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        var prompt = $"""
+            User message:
+            {userMessage}
+
+            Pending confirmation:
+            {JsonSerializer.Serialize(new
+            {
+                question = draft.Question,
+                proposedValue = draft.ProposedValue
+            })}
+
+            Classify whether the user confirms or rejects this pending draft.
+            Understand natural language in the user's language, including
+            affirmative or negative explanations. Do not execute anything and
+            do not extract a new value.
+            Return only JSON with exactly one field:
+            IsConfirmed (boolean or null).
+            Return null when the message is unrelated, ambiguous, or asks for a revision.
+            """;
+
+        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        using var document = JsonDocument.Parse(text);
+        var root = document.RootElement;
+        var property = root.TryGetProperty("IsConfirmed", out var value)
+            ? value
+            : root.TryGetProperty("isConfirmed", out value)
+                ? value
+                : default;
+        bool? result = property.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
+        return (result, usage);
+    }
+
     public async Task<(LlmMatchResult MatchResult, TokenUsageResult TokenUsage)> ExtractIntentAsync(
         string userMessage,
         IEnumerable<DcrEvent> availableEvents,
@@ -51,6 +159,7 @@ public sealed class GeminiLlmService : ILlmService
             {
                 id = dcrEvent.Id,
                 label = dcrEvent.Label,
+                dataType = dcrEvent.DataType,
                 allowedValues = EventValidator.GetChoiceValues(dcrEvent)
             })
             .ToArray();
@@ -60,6 +169,13 @@ public sealed class GeminiLlmService : ILlmService
 
             Available events:
             {JsonSerializer.Serialize(events)}
+
+            Match the user's message to the best available event and extract
+            only the value for that event. For example, if the user says
+            "Jeg er 18 år" for an integer event, return "18", not the full
+            sentence. For a date, return the date value. For free text, return
+            the user's relevant answer. Return null values when the message
+            does not answer an available event.
 
             Return only a JSON object with exactly these fields:
             MatchedEventId (string or null), ExtractedValue (string or null),
@@ -263,6 +379,12 @@ public sealed class GeminiLlmService : ILlmService
     {
         public int PromptTokenCount { get; init; }
         public int CandidatesTokenCount { get; init; }
+    }
+
+    private sealed class LlmValueResult
+    {
+        public string? ExtractedValue { get; init; }
+        public string Explanation { get; init; } = string.Empty;
     }
 }
 

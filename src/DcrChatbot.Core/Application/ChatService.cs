@@ -33,7 +33,10 @@ public sealed class ChatService(
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
-        return ToResponse(session, "Samtalen er startet.");
+        var pendingEvent = GetNextAnswerablePendingEvent(state);
+        return ToResponse(
+            session,
+            pendingEvent is null ? "Samtalen er startet." : pendingEvent.Label);
     }
 
     public async Task<ChatResponse> SendMessageAsync(
@@ -47,8 +50,12 @@ public sealed class ChatService(
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
-                // Et skrevet "ja"/"nej" svarer på kladden, ligesom knapperne.
-                var answer = ParseYesNo(message);
+                var answerResult = await llmService.ClassifyConfirmationAsync(
+                    message,
+                    session.PendingAnswersQueue[0],
+                    llmOptions,
+                    cancellationToken);
+                var answer = answerResult.IsConfirmed;
                 if (answer is null)
                 {
                     throw new ChatConflictException(
@@ -168,16 +175,40 @@ public sealed class ChatService(
 
         var answers = FindNewAnswers(session.CurrentGraphState, pendingLabelsBefore);
         session.PendingLabelsBeforeExecution = null;
-        var reply = answers.Count == 0
-            ? "Jeg har desværre ikke et svar på det spørgsmål endnu."
-            : string.Join("\n\n", answers.Select(GetAnswerText));
+        var nextPendingEvent = GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var replyParts = answers.Select(GetAnswerText).ToList();
+
+        // Hvis alle spørgsmål er besvaret, find eventuelle aktive konklusioner (f.eks. DMN resultater)
+        List<DcrEvent> conclusionLabels = [];
+        if (nextPendingEvent is null && replyParts.Count == 0)
+        {
+            conclusionLabels = session.CurrentGraphState?.EnabledEvents
+                .Where(e => string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)
+                         && (!string.IsNullOrWhiteSpace(e.Value) || !string.IsNullOrWhiteSpace(e.DisplayValue)))
+                .ToList() ?? [];
+
+            if (conclusionLabels.Count > 0)
+            {
+                replyParts.AddRange(conclusionLabels.Select(GetAnswerText));
+            }
+        }
+
+        if (nextPendingEvent is not null)
+        {
+            replyParts.Add(nextPendingEvent.Label);
+        }
+
+        var reply = replyParts.Count == 0
+            ? "Tak for dine svar. Forløbet er nu afsluttet."
+            : string.Join("\n\n", replyParts);
+
         session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
 
         // Svarene udføres, så samme spørgsmål kan stilles igen og svaret
         // vises på ny. De sættes i kø og gemmes først: fejler udførslen,
         // har borgeren stadig fået svaret, og køen prøves igen ved næste
         // bekræftelse.
-        session.AnswerLabelsToExecute.AddRange(answers.Select(e => e.Id));
+        session.AnswerLabelsToExecute.AddRange(answers.Concat(conclusionLabels).Select(e => e.Id));
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         try
         {
@@ -241,19 +272,60 @@ public sealed class ChatService(
             return ToResponse(session, "Der er ingen tilgængelige spørgsmål lige nu.");
         }
 
-        var (match, _) = await llmService.ExtractIntentAsync(message, candidates, llmOptions, cancellationToken);
+        var pendingEvent = GetNextAnswerablePendingEvent(session.CurrentGraphState);
 
-        if (string.IsNullOrWhiteSpace(match.MatchedEventId))
+        if (pendingEvent is not null)
         {
-            return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere.");
+            candidates = candidates
+                .OrderByDescending(e => e.Id == pendingEvent.Id)
+                .ThenBy(e => e.Sequence)
+                .ToList();
         }
 
-        var matchedEvent = candidates.FirstOrDefault(e =>
-            string.Equals(e.Id, match.MatchedEventId, StringComparison.OrdinalIgnoreCase));
+        DcrEvent? matchedEvent;
+        string? value;
+        string explanation;
+        var isEventMatch = false;
+        if (pendingEvent is not null)
+        {
+            matchedEvent = pendingEvent;
+            var extracted = await llmService.ExtractValueAsync(
+                message,
+                matchedEvent,
+                llmOptions,
+                cancellationToken);
+            value = extracted.ExtractedValue;
+            explanation = extracted.Explanation;
+        }
+        else
+        {
+            var (matchedEventId, _) = await llmService.MatchEventAsync(
+                message,
+                candidates,
+                llmOptions,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(matchedEventId))
+            {
+                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
+            }
 
-        // FAQ-flow: LLM'en finder kun spørgsmålet. Borgerens bekræftelse er
-        // selve "ja"-svaret, så værdien tages fra grafen, ikke fra LLM'en.
-        var value = matchedEvent is null ? null : GetYesValue(matchedEvent);
+            matchedEvent = candidates.FirstOrDefault(e =>
+                string.Equals(e.Id, matchedEventId, StringComparison.OrdinalIgnoreCase));
+            if (matchedEvent is null)
+            {
+                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
+            }
+
+            // En event-match beskæftiger sig kun med spørgsmålet. For choice-
+            // events bruges grafens svarværdi; der kaldes ingen value extractor.
+            value = GetYesValue(matchedEvent);
+            isEventMatch = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return ToResponse(session, "Jeg kunne ikke udtrække en værdi fra dit svar. Prøv venligst igen.");
+        }
         var validation = EventValidator.Validate(matchedEvent, value);
         if (!validation.IsValid)
         {
@@ -264,44 +336,48 @@ public sealed class ChatService(
         {
             EventId = matchedEvent!.Id,
             Question = matchedEvent.Label,
-            ProposedValue = value!,
-            Explanation = match.UserIntentExplanation,
-            IsAutoInferred = true
+            ProposedValue = value,
+            IsAutoInferred = true,
+            IsEventMatch = isEventMatch
         };
         session.PendingAnswersQueue.Add(draft);
 
-        // Selve spørgsmålet vises på kladdekortet sammen med Ja/Nej-knapperne.
-        return ToResponse(session, "Jeg tror, jeg har fundet dit spørgsmål. Er det det her?");
+        return ToResponse(
+            session,
+            $"Jeg har forstået '{matchedEvent.Label}' som '{value}'. Er det korrekt?");
     }
 
-    // Grafens "ja"-værdi for et choice-event, ellers den første gyldige værdi.
     private static string? GetYesValue(DcrEvent dcrEvent)
     {
         var values = EventValidator.GetChoiceValues(dcrEvent);
-        return values.FirstOrDefault(v => YesWords.Contains(v)) ?? values.FirstOrDefault();
+        return values.FirstOrDefault(v => ChoiceYesWords.Contains(v)) ?? values.FirstOrDefault();
     }
 
-    private static readonly HashSet<string> YesWords =
+    private static readonly HashSet<string> ChoiceYesWords =
         new(["ja", "yes", "jo", "jep", "ja tak", "ok", "okay", "korrekt", "rigtigt"], StringComparer.OrdinalIgnoreCase);
-
-    private static readonly HashSet<string> NoWords =
-        new(["nej", "no", "nej tak", "forkert"], StringComparer.OrdinalIgnoreCase);
-
-    private static bool? ParseYesNo(string message)
-    {
-        var normalized = message.Trim().TrimEnd('.', '!', '?').Trim();
-        return YesWords.Contains(normalized) ? true
-            : NoWords.Contains(normalized) ? false
-            : null;
-    }
 
     private static IEnumerable<DcrEvent> GetPendingLabels(GraphState? state) =>
         state?.EnabledEvents.Where(e =>
             e.IsPending && string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)) ?? [];
 
+    private static DcrEvent? GetNextAnswerablePendingEvent(GraphState? state) =>
+        state?.GetPendingEvents().FirstOrDefault(e =>
+            !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase));
+
     // I FAQ-graferne er label-eventets label selve svarteksten. Description
     // er DCR's dokumentationsfelt og kan indeholde interne noter.
-    private static string GetAnswerText(DcrEvent dcrEvent) => dcrEvent.Label;
+    private static string GetAnswerText(DcrEvent dcrEvent)
+    {
+        if (!string.IsNullOrWhiteSpace(dcrEvent.DisplayValue))
+        {
+            return dcrEvent.DisplayValue;
+        }
+        if (!string.IsNullOrWhiteSpace(dcrEvent.Value))
+        {
+            return dcrEvent.Value;
+        }
+        return dcrEvent.Label;
+    }
 
     private static string ToCitizenMessage(EventValidationError error) => error switch
     {
@@ -309,13 +385,13 @@ public sealed class ChatService(
         _ => "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere."
     };
 
-    // FR-DCR-4: kun choice-events er kandidater. Label-events er aldrig
-    // kandidater (de er informationsbeskeder, ikke spørgsmål), og
-    // allerede udførte choice-events forbliver kandidater, så borgeren
-    // kan spørge om samme emne igen, så længe det ikke er excluded.
+    // Label-events er informationsbeskeder, ikke svarbare kandidater.
     private static List<DcrEvent> GetCandidateEvents(GraphState? state) =>
         state?.EnabledEvents
-            .Where(e => string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase))
+            .Where(e =>
+                !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase) ||
+                 e.IsExecuted != true))
             .ToList() ?? [];
 
     private async Task RefreshStateAsync(ChatSession session, CancellationToken cancellationToken)
