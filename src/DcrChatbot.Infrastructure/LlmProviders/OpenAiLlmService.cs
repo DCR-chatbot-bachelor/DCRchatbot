@@ -45,20 +45,21 @@ public sealed class OpenAiLlmService : ILlmService
         return (LlmIntentPrompt.ParseMatchedEventId(text, "OpenAI"), usage);
     }
 
-    public async Task<(string? ExtractedValue, string Explanation, TokenUsageResult TokenUsage)> ExtractValueAsync(
+    public async Task<(LlmValueResult ValueResult, TokenUsageResult TokenUsage)> ExtractValueAsync(
         string userMessage,
         DcrEvent matchedEvent,
+        IEnumerable<DcrEvent> otherOpenEvents,
         LlmOptions options,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
         ArgumentNullException.ThrowIfNull(matchedEvent);
+        ArgumentNullException.ThrowIfNull(otherOpenEvents);
         ValidateOptions(options);
 
-        var prompt = LlmIntentPrompt.BuildValuePrompt(userMessage, matchedEvent);
+        var prompt = LlmIntentPrompt.BuildValuePrompt(userMessage, matchedEvent, otherOpenEvents);
         var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
-        var (value, explanation) = LlmIntentPrompt.ParseValueResult(text, "OpenAI");
-        return (value, explanation, usage);
+        return (LlmIntentPrompt.ParseValueResult(text, "OpenAI"), usage);
     }
 
     public async Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(

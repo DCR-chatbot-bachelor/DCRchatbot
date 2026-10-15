@@ -57,6 +57,27 @@ public sealed class OpenAiLlmServiceTests
     }
 
     [Fact]
+    public async Task ExtractValueAsync_SendsOtherOpenEvents_AndParsesInferredReplies()
+    {
+        var handler = new RecordingHandler(_ => OpenAiResponse(
+            "{\"ExtractedValue\":18,\"Explanation\":\"Alder\",\"InferredReplies\":{\"Country\":\"Denmark\"}}"));
+        var service = CreateService(handler);
+
+        var (result, _) = await service.ExtractValueAsync(
+            "Jeg er 18 og bor i Danmark",
+            new DcrEvent { Id = "Age", Label = "Hvor gammel er du?", DataType = "int" },
+            [new DcrEvent { Id = "Country", Label = "Hvilket land?", DataType = "choice", ChoiceValues = "Denmark (Denmark), Sweden (Sweden)" }],
+            CreateOptions("gpt-4.1-mini"));
+
+        Assert.Equal("18", result.ExtractedValue);
+        Assert.Equal("Denmark", result.InferredReplies["Country"]);
+        using var body = JsonDocument.Parse(handler.LastBody!);
+        var userPrompt = body.RootElement.GetProperty("messages")[1].GetProperty("content").GetString();
+        Assert.Contains("Other open events", userPrompt);
+        Assert.Contains("\"id\":\"Country\"", userPrompt);
+    }
+
+    [Fact]
     public async Task ExtractIntentAsync_ThrowsForInvalidJson()
     {
         var service = CreateService(new RecordingHandler(_ => OpenAiResponse("not-json")));

@@ -91,32 +91,55 @@ internal static class LlmIntentPrompt
     public static string? ParseMatchedEventId(string text, string providerName) =>
         Deserialize<MatchEventResult>(text, providerName).MatchedEventId;
 
-    // Udtrækker værdien til ét bestemt event (det spørgsmål botten har stillet).
-    public static string BuildValuePrompt(string userMessage, DcrEvent matchedEvent) =>
+    // Udtrækker værdien til det spørgsmål botten har stillet, og eventuelle
+    // svar på de andre åbne spørgsmål, som borgeren nævner i samme besked.
+    public static string BuildValuePrompt(
+        string userMessage, DcrEvent matchedEvent, IEnumerable<DcrEvent> otherOpenEvents) =>
         $"""
             User message:
             {userMessage}
 
             Event:
-            {JsonSerializer.Serialize(new
-            {
-                id = matchedEvent.Id,
-                label = matchedEvent.Label,
-                dataType = matchedEvent.DataType,
-                allowedValues = EventValidator.GetChoiceValues(matchedEvent)
-            })}
+            {JsonSerializer.Serialize(DescribeEvent(matchedEvent))}
+
+            Other open events:
+            {JsonSerializer.Serialize(otherOpenEvents.Select(DescribeEvent))}
 
             Extract only the value that answers this event. For example,
             "Jeg er 18 år" for an integer event returns "18".
+            If the message also clearly answers some of the other open events,
+            put those answers in InferredReplies, keyed by their event id.
+            Never include the main event in InferredReplies, and never guess:
+            leave InferredReplies empty when nothing else is clearly answered.
+            For choice events, every value must be one of their allowedValues.
             Return only JSON with exactly these fields:
-            ExtractedValue (string or null), Explanation (short string).
+            ExtractedValue (string or null), Explanation (short string),
+            InferredReplies (object mapping event IDs to string values).
             """;
 
-    public static (string? ExtractedValue, string Explanation) ParseValueResult(string text, string providerName)
+    public static LlmValueResult ParseValueResult(string text, string providerName)
     {
-        var result = Deserialize<ValueResult>(text, providerName);
-        return (result.ExtractedValue, result.Explanation ?? string.Empty);
+        var result = Deserialize<LlmValueResult>(text, providerName);
+        if (result.InferredReplies is null)
+        {
+            result.InferredReplies = new();
+        }
+
+        if (result.Explanation is null)
+        {
+            result.Explanation = string.Empty;
+        }
+
+        return result;
     }
+
+    private static object DescribeEvent(DcrEvent dcrEvent) => new
+    {
+        id = dcrEvent.Id,
+        label = dcrEvent.Label,
+        dataType = dcrEvent.DataType,
+        allowedValues = EventValidator.GetChoiceValues(dcrEvent)
+    };
 
     // Afgør om borgerens fritekst bekræfter eller afviser kladden.
     public static string BuildConfirmationPrompt(string userMessage, PendingAnswer draft) =>
@@ -205,12 +228,6 @@ internal static class LlmIntentPrompt
     private sealed class MatchEventResult
     {
         public string? MatchedEventId { get; init; }
-    }
-
-    private sealed class ValueResult
-    {
-        public string? ExtractedValue { get; init; }
-        public string? Explanation { get; init; }
     }
 
     private sealed class ConfirmationResult

@@ -507,6 +507,96 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         Assert.True(response.IsEnded);
     }
 
+    [Fact]
+    public async Task InferredReplies_MessageWithTwoAnswers_GivesTwoConfirmationsInARow_WithoutRepeats()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18", new() { ["country"] = "denmark" });
+
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg er 18 og bor i Danmark" });
+        Assert.Equal("Age", first.PendingDraft!.EventId);
+        Assert.Equal("18", first.PendingDraft.ProposedValue);
+        Assert.False(first.PendingDraft.IsAutoInferred);
+
+        var second = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft.Id);
+        Assert.Equal("Country", second.PendingDraft!.EventId);
+        Assert.Equal("Denmark", second.PendingDraft.ProposedValue);
+        Assert.True(second.PendingDraft.IsAutoInferred);
+        Assert.Equal(string.Empty, second.Message);
+
+        // Begge svar er udført, og botten går videre til det næste åbne
+        // spørgsmål uden at spørge om alder eller land igen.
+        var third = await service.ConfirmDraftAsync(session.SessionId, second.PendingDraft.Id);
+        Assert.Null(third.PendingDraft);
+        Assert.Equal("Hvor høj er du?", third.Message);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "Age", "18", It.IsAny<CancellationToken>()), Times.Once);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "Country", "Denmark", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task InferredReplies_SkipsUnknownPrimaryInvalidAndAlreadyExecutedEvents()
+    {
+        var (session, _) = await StartFormSessionAsync(alreadyExecuted: "height");
+        SetupValueExtraction("18", new()
+        {
+            ["Age"] = "99",          // det stillede spørgsmål selv
+            ["Country"] = "Norway",  // ikke en gyldig værdi
+            ["height"] = "180",      // allerede udført
+            ["opfundet"] = "ja"      // findes ikke i grafen
+        });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg er 18" });
+
+        var persisted = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Equal(["Age"], persisted!.PendingAnswersQueue.Select(d => d.EventId));
+        Assert.Equal("18", response.PendingDraft!.ProposedValue);
+    }
+
+    [Fact]
+    public async Task InferredReplies_QueuedDraftIsDropped_WhenEventNoLongerApplies()
+    {
+        var (session, graph) = await StartFormSessionAsync();
+        SetupValueExtraction("18", new() { ["Country"] = "Denmark" });
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg er 18 og bor i Danmark" });
+
+        // Svaret på alderen gør, at landet ikke længere er relevant.
+        graph.Disabled.Add("Country");
+        var response = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Hvor høj er du?", response.Message);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "Country", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task InferredReplies_AreQueued_WhenAskedQuestionIsNotAnswered()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction(null, new() { ["Country"] = "Sweden" });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg bor i Sverige" });
+
+        Assert.Equal("Country", response.PendingDraft!.EventId);
+        Assert.Equal("Sweden", response.PendingDraft.ProposedValue);
+    }
+
+    [Fact]
+    public async Task InferredReplies_RejectingFirstDraft_StillShowsTheNext()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18", new() { ["Country"] = "Denmark" });
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg er 18 og bor i Danmark" });
+
+        var response = await service.RejectDraftAsync(session.SessionId, first.PendingDraft!.Id);
+
+        Assert.Equal("Country", response.PendingDraft!.EventId);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     private async Task<ChatSession> StartSessionAsync(GraphState graphState)
     {
         dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -527,13 +617,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
                 It.IsAny<LlmOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync((eventId, new TokenUsageResult()));
-        llmService
-            .Setup(s => s.ExtractValueAsync(
-                It.IsAny<string>(),
-                It.IsAny<DcrEvent>(),
-                It.IsAny<LlmOptions>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((value, "Extracted by test", new TokenUsageResult()));
+        SetupValueExtraction(value);
         llmService
             .Setup(s => s.ClassifyConfirmationAsync(
                 It.IsAny<string>(),
@@ -550,5 +634,74 @@ public async Task RejectDraft_DoesNotExecuteEvent()
                         : null;
                 return Task.FromResult((result, new TokenUsageResult()));
             });
+    }
+
+    private void SetupValueExtraction(string? value, Dictionary<string, string>? inferredReplies = null) =>
+        llmService
+            .Setup(s => s.ExtractValueAsync(
+                It.IsAny<string>(),
+                It.IsAny<DcrEvent>(),
+                It.IsAny<IEnumerable<DcrEvent>>(),
+                It.IsAny<LlmOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((
+                new LlmValueResult
+                {
+                    ExtractedValue = value,
+                    Explanation = "Extracted by test",
+                    InferredReplies = inferredReplies ?? new()
+                },
+                new TokenUsageResult()));
+
+    // Lille fake af en formular-graf i DCR: alle spørgsmål starter pending,
+    // et udført event er ikke længere pending, og events kan slås fra.
+    private sealed class FakeFormGraph
+    {
+        private readonly HashSet<string> executed = new(StringComparer.OrdinalIgnoreCase);
+
+        public HashSet<string> Disabled { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public GraphState State() => new()
+        {
+            Events =
+            [
+                Question("Age", "Hvor gammel er du?", "int", 1),
+                Question("Country", "Hvilket land bor du i?", "choice", 2, "Denmark (Denmark), Sweden (Sweden)"),
+                Question("height", "Hvor høj er du?", "int", 3)
+            ]
+        };
+
+        public void Execute(string eventId) => executed.Add(eventId);
+
+        private DcrEvent Question(string id, string label, string dataType, int sequence, string choiceValues = "") => new()
+        {
+            Id = id,
+            Label = label,
+            DataType = dataType,
+            Sequence = sequence,
+            ChoiceValues = choiceValues,
+            IsEnabled = !Disabled.Contains(id),
+            IsPending = !executed.Contains(id),
+            IsExecuted = executed.Contains(id) ? true : null
+        };
+    }
+
+    private async Task<(ChatSession Session, FakeFormGraph Graph)> StartFormSessionAsync(params string[] alreadyExecuted)
+    {
+        var graph = new FakeFormGraph();
+        foreach (var eventId in alreadyExecuted)
+        {
+            graph.Execute(eventId);
+        }
+
+        var session = await StartSessionAsync(graph.State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => graph.State());
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) => graph.Execute(id))
+            .ReturnsAsync(true);
+        return (session, graph);
     }
 }

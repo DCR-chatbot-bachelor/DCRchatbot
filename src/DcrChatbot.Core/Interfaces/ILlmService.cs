@@ -19,9 +19,14 @@ public interface ILlmService
         LlmOptions options,
         CancellationToken cancellationToken = default);
 
-    Task<(string? ExtractedValue, string Explanation, TokenUsageResult TokenUsage)> ExtractValueAsync(
+    /// <summary>
+    /// Udtrækker svaret på det stillede spørgsmål og eventuelle afledte svar
+    /// på de andre åbne spørgsmål i samme besked (FR-LLM-2, FR-DCR-2).
+    /// </summary>
+    Task<(LlmValueResult ValueResult, TokenUsageResult TokenUsage)> ExtractValueAsync(
         string userMessage,
         DcrEvent matchedEvent,
+        IEnumerable<DcrEvent> otherOpenEvents,
         LlmOptions options,
         CancellationToken cancellationToken = default);
 
