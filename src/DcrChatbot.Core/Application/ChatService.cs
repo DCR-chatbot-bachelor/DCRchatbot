@@ -33,7 +33,10 @@ public sealed class ChatService(
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
-        return ToResponse(session, "Samtalen er startet.");
+        var pendingEvent = GetNextAnswerablePendingEvent(state);
+        return ToResponse(
+            session,
+            pendingEvent is null ? "Samtalen er startet." : pendingEvent.Label);
     }
 
     public async Task<ChatResponse> SendMessageAsync(
@@ -47,8 +50,12 @@ public sealed class ChatService(
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
-                // Et skrevet "ja"/"nej" svarer på kladden, ligesom knapperne.
-                var answer = ParseYesNo(message);
+                var answerResult = await llmService.ClassifyConfirmationAsync(
+                    message,
+                    session.PendingAnswersQueue[0],
+                    llmOptions,
+                    cancellationToken);
+                var answer = answerResult.IsConfirmed;
                 if (answer is null)
                 {
                     throw new ChatConflictException(
@@ -116,7 +123,9 @@ public sealed class ChatService(
         if (!confirm)
         {
             session.PendingAnswersQueue.Remove(draft);
-            const string rejected = "Okay. Prøv at omformulere dit spørgsmål.";
+            var rejected = session.PendingAnswersQueue.Count > 0
+                ? "Okay, det svar springer jeg over."
+                : "Okay. Prøv at omformulere dit spørgsmål.";
             session.History.Add(new ChatMessage { Sender = "Bot", Content = rejected });
             await RefreshStateAsync(session, cancellationToken);
             return ToResponse(session, rejected);
@@ -168,16 +177,48 @@ public sealed class ChatService(
 
         var answers = FindNewAnswers(session.CurrentGraphState, pendingLabelsBefore);
         session.PendingLabelsBeforeExecution = null;
-        var reply = answers.Count == 0
-            ? "Jeg har desværre ikke et svar på det spørgsmål endnu."
-            : string.Join("\n\n", answers.Select(GetAnswerText));
-        session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+        DropQueuedDraftsThatNoLongerApply(session);
+
+        // Er der flere kladder i køen (FR-DCR-2), vises den næste i stedet
+        // for et nyt spørgsmål eller en konklusion.
+        var hasQueuedDrafts = session.PendingAnswersQueue.Count > 0;
+        var nextPendingEvent = hasQueuedDrafts ? null : GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var replyParts = answers.Select(GetAnswerText).ToList();
+
+        // Hvis alle spørgsmål er besvaret, find eventuelle aktive konklusioner (f.eks. DMN resultater)
+        List<DcrEvent> conclusionLabels = [];
+        if (!hasQueuedDrafts && nextPendingEvent is null && replyParts.Count == 0)
+        {
+            conclusionLabels = session.CurrentGraphState?.EnabledEvents
+                .Where(e => string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)
+                         && (!string.IsNullOrWhiteSpace(e.Value) || !string.IsNullOrWhiteSpace(e.DisplayValue)))
+                .ToList() ?? [];
+
+            if (conclusionLabels.Count > 0)
+            {
+                replyParts.AddRange(conclusionLabels.Select(GetAnswerText));
+            }
+        }
+
+        if (nextPendingEvent is not null)
+        {
+            replyParts.Add(nextPendingEvent.Label);
+        }
+
+        var reply = replyParts.Count > 0
+            ? string.Join("\n\n", replyParts)
+            : hasQueuedDrafts ? string.Empty : "Tak for dine svar. Forløbet er nu afsluttet.";
+
+        if (reply.Length > 0)
+        {
+            session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+        }
 
         // Svarene udføres, så samme spørgsmål kan stilles igen og svaret
         // vises på ny. De sættes i kø og gemmes først: fejler udførslen,
         // har borgeren stadig fået svaret, og køen prøves igen ved næste
         // bekræftelse.
-        session.AnswerLabelsToExecute.AddRange(answers.Select(e => e.Id));
+        session.AnswerLabelsToExecute.AddRange(answers.Concat(conclusionLabels).Select(e => e.Id));
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         try
         {
@@ -241,67 +282,208 @@ public sealed class ChatService(
             return ToResponse(session, "Der er ingen tilgængelige spørgsmål lige nu.");
         }
 
-        var (match, _) = await llmService.ExtractIntentAsync(message, candidates, llmOptions, cancellationToken);
+        var pendingEvent = GetNextAnswerablePendingEvent(session.CurrentGraphState);
 
-        if (string.IsNullOrWhiteSpace(match.MatchedEventId))
+        if (pendingEvent is not null)
         {
-            return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere.");
+            candidates = candidates
+                .OrderByDescending(e => e.Id == pendingEvent.Id)
+                .ThenBy(e => e.Sequence)
+                .ToList();
         }
 
-        var matchedEvent = candidates.FirstOrDefault(e =>
-            string.Equals(e.Id, match.MatchedEventId, StringComparison.OrdinalIgnoreCase));
-
-        // FAQ-flow: LLM'en finder kun spørgsmålet. Borgerens bekræftelse er
-        // selve "ja"-svaret, så værdien tages fra grafen, ikke fra LLM'en.
-        var value = matchedEvent is null ? null : GetYesValue(matchedEvent);
-        var validation = EventValidator.Validate(matchedEvent, value);
-        if (!validation.IsValid)
+        DcrEvent? matchedEvent;
+        string? value;
+        var isEventMatch = false;
+        List<PendingAnswer> inferredDrafts = [];
+        if (pendingEvent is not null)
         {
-            return ToResponse(session, ToCitizenMessage(validation.Error));
+            matchedEvent = pendingEvent;
+
+            // FR-DCR-2: de andre åbne spørgsmål sendes med, så borgeren kan
+            // besvare flere af dem i samme besked.
+            var otherOpenEvents = GetAnswerablePendingEvents(session.CurrentGraphState)
+                .Where(e => !string.Equals(e.Id, pendingEvent.Id, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var (extracted, _) = await llmService.ExtractValueAsync(
+                message,
+                matchedEvent,
+                otherOpenEvents,
+                llmOptions,
+                cancellationToken);
+            value = extracted.ExtractedValue;
+            inferredDrafts = BuildInferredDrafts(
+                session, extracted.InferredReplies, otherOpenEvents, pendingEvent.Id);
+        }
+        else
+        {
+            var (matchedEventId, _) = await llmService.MatchEventAsync(
+                message,
+                candidates,
+                llmOptions,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(matchedEventId))
+            {
+                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
+            }
+
+            matchedEvent = candidates.FirstOrDefault(e =>
+                string.Equals(e.Id, matchedEventId, StringComparison.OrdinalIgnoreCase));
+            if (matchedEvent is null)
+            {
+                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
+            }
+
+            // En event-match beskæftiger sig kun med spørgsmålet. For choice-
+            // events bruges grafens svarværdi; der kaldes ingen value extractor.
+            value = GetYesValue(matchedEvent);
+            isEventMatch = true;
         }
 
-        var draft = new PendingAnswer
+        // Svaret på det stillede spørgsmål kommer først i køen. Kan det ikke
+        // bruges, men har borgeren svaret på andre åbne spørgsmål, bekræftes
+        // de i stedet, og spørgsmålet stilles igen bagefter.
+        if (string.IsNullOrWhiteSpace(value))
         {
-            EventId = matchedEvent!.Id,
-            Question = matchedEvent.Label,
-            ProposedValue = value!,
-            Explanation = match.UserIntentExplanation,
-            IsAutoInferred = true
-        };
-        session.PendingAnswersQueue.Add(draft);
+            if (inferredDrafts.Count == 0)
+            {
+                return ToResponse(session, "Jeg kunne ikke udtrække en værdi fra dit svar. Prøv venligst igen.");
+            }
+        }
+        else
+        {
+            value = ToCanonicalValue(matchedEvent, value);
+            var validation = EventValidator.Validate(matchedEvent, value);
+            if (validation.IsValid)
+            {
+                session.PendingAnswersQueue.Add(new PendingAnswer
+                {
+                    EventId = matchedEvent.Id,
+                    Question = matchedEvent.Label,
+                    ProposedValue = value,
+                    IsAutoInferred = false,
+                    IsEventMatch = isEventMatch
+                });
+            }
+            else if (inferredDrafts.Count == 0)
+            {
+                return ToResponse(session, ToCitizenMessage(validation.Error));
+            }
+        }
 
-        // Selve spørgsmålet vises på kladdekortet sammen med Ja/Nej-knapperne.
-        return ToResponse(session, "Jeg tror, jeg har fundet dit spørgsmål. Er det det her?");
+        session.PendingAnswersQueue.AddRange(inferredDrafts);
+
+        // Kladderne vises ét ad gangen; beskeden beskriver den første.
+        var first = session.PendingAnswersQueue[0];
+        return ToResponse(
+            session,
+            $"Jeg har forstået '{first.Question}' som '{first.ProposedValue}'. Er det korrekt?");
     }
 
-    // Grafens "ja"-værdi for et choice-event, ellers den første gyldige værdi.
+    // FR-DCR-2: afledte svar fra LLM'en er kun forslag. De bliver til
+    // kladder, når de hører til et åbent spørgsmål, ikke allerede er i køen
+    // og har en gyldig værdi; rækkefølgen følger grafen.
+    private static List<PendingAnswer> BuildInferredDrafts(
+        ChatSession session,
+        IReadOnlyDictionary<string, string> inferredReplies,
+        IReadOnlyList<DcrEvent> openEvents,
+        string primaryEventId)
+    {
+        var replies = new Dictionary<string, string>(inferredReplies, StringComparer.OrdinalIgnoreCase);
+        var drafts = new List<PendingAnswer>();
+        foreach (var dcrEvent in openEvents)
+        {
+            if (!replies.TryGetValue(dcrEvent.Id, out var rawValue) ||
+                string.IsNullOrWhiteSpace(rawValue) ||
+                dcrEvent.IsExecuted == true ||
+                string.Equals(dcrEvent.Id, primaryEventId, StringComparison.OrdinalIgnoreCase) ||
+                session.PendingAnswersQueue.Any(d =>
+                    string.Equals(d.EventId, dcrEvent.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var value = ToCanonicalValue(dcrEvent, rawValue);
+            if (!EventValidator.Validate(dcrEvent, value).IsValid)
+            {
+                continue;
+            }
+
+            drafts.Add(new PendingAnswer
+            {
+                EventId = dcrEvent.Id,
+                Question = dcrEvent.Label,
+                ProposedValue = value,
+                IsAutoInferred = true
+            });
+        }
+
+        return drafts;
+    }
+
+    // Når et svar er udført, kan grafen have ændret sig: et afledt svar kan
+    // være blevet disabled eller allerede besvaret. Det fjernes fra køen i
+    // stedet for at blive vist for borgeren.
+    private static void DropQueuedDraftsThatNoLongerApply(ChatSession session)
+    {
+        session.PendingAnswersQueue.RemoveAll(draft =>
+        {
+            if (draft.ExecutionStatus != "Pending")
+            {
+                return false;
+            }
+
+            var dcrEvent = session.CurrentGraphState?.GetEvent(draft.EventId);
+            return dcrEvent is null ||
+                (dcrEvent.IsExecuted == true &&
+                 !string.Equals(dcrEvent.DataType, "choice", StringComparison.OrdinalIgnoreCase)) ||
+                !EventValidator.Validate(dcrEvent, draft.ProposedValue).IsValid;
+        });
+    }
+
+    // Grafens egen stavemåde af en choice-værdi (fx "Denmark" frem for "denmark").
+    private static string ToCanonicalValue(DcrEvent dcrEvent, string value)
+    {
+        var trimmed = value.Trim();
+        return EventValidator.GetChoiceValues(dcrEvent)
+            .FirstOrDefault(v => string.Equals(v, trimmed, StringComparison.OrdinalIgnoreCase))
+            ?? trimmed;
+    }
+
     private static string? GetYesValue(DcrEvent dcrEvent)
     {
         var values = EventValidator.GetChoiceValues(dcrEvent);
-        return values.FirstOrDefault(v => YesWords.Contains(v)) ?? values.FirstOrDefault();
+        return values.FirstOrDefault(v => ChoiceYesWords.Contains(v)) ?? values.FirstOrDefault();
     }
 
-    private static readonly HashSet<string> YesWords =
+    private static readonly HashSet<string> ChoiceYesWords =
         new(["ja", "yes", "jo", "jep", "ja tak", "ok", "okay", "korrekt", "rigtigt"], StringComparer.OrdinalIgnoreCase);
-
-    private static readonly HashSet<string> NoWords =
-        new(["nej", "no", "nej tak", "forkert"], StringComparer.OrdinalIgnoreCase);
-
-    private static bool? ParseYesNo(string message)
-    {
-        var normalized = message.Trim().TrimEnd('.', '!', '?').Trim();
-        return YesWords.Contains(normalized) ? true
-            : NoWords.Contains(normalized) ? false
-            : null;
-    }
 
     private static IEnumerable<DcrEvent> GetPendingLabels(GraphState? state) =>
         state?.EnabledEvents.Where(e =>
             e.IsPending && string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)) ?? [];
 
+    private static DcrEvent? GetNextAnswerablePendingEvent(GraphState? state) =>
+        GetAnswerablePendingEvents(state).FirstOrDefault();
+
+    private static IEnumerable<DcrEvent> GetAnswerablePendingEvents(GraphState? state) =>
+        state?.GetPendingEvents().Where(e =>
+            !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)) ?? [];
+
     // I FAQ-graferne er label-eventets label selve svarteksten. Description
     // er DCR's dokumentationsfelt og kan indeholde interne noter.
-    private static string GetAnswerText(DcrEvent dcrEvent) => dcrEvent.Label;
+    private static string GetAnswerText(DcrEvent dcrEvent)
+    {
+        if (!string.IsNullOrWhiteSpace(dcrEvent.DisplayValue))
+        {
+            return dcrEvent.DisplayValue;
+        }
+        if (!string.IsNullOrWhiteSpace(dcrEvent.Value))
+        {
+            return dcrEvent.Value;
+        }
+        return dcrEvent.Label;
+    }
 
     private static string ToCitizenMessage(EventValidationError error) => error switch
     {
@@ -309,13 +491,13 @@ public sealed class ChatService(
         _ => "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere."
     };
 
-    // FR-DCR-4: kun choice-events er kandidater. Label-events er aldrig
-    // kandidater (de er informationsbeskeder, ikke spørgsmål), og
-    // allerede udførte choice-events forbliver kandidater, så borgeren
-    // kan spørge om samme emne igen, så længe det ikke er excluded.
+    // Label-events er informationsbeskeder, ikke svarbare kandidater.
     private static List<DcrEvent> GetCandidateEvents(GraphState? state) =>
         state?.EnabledEvents
-            .Where(e => string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase))
+            .Where(e =>
+                !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase) ||
+                 e.IsExecuted != true))
             .ToList() ?? [];
 
     private async Task RefreshStateAsync(ChatSession session, CancellationToken cancellationToken)

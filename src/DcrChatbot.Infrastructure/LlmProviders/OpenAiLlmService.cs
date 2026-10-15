@@ -30,6 +30,53 @@ public sealed class OpenAiLlmService : ILlmService
         this.httpClient = httpClient;
     }
 
+    public async Task<(string? MatchedEventId, TokenUsageResult TokenUsage)> MatchEventAsync(
+        string userMessage,
+        IEnumerable<DcrEvent> availableEvents,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(availableEvents);
+        ValidateOptions(options);
+
+        var prompt = LlmIntentPrompt.BuildMatchEventPrompt(userMessage, availableEvents);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
+        return (LlmIntentPrompt.ParseMatchedEventId(text, "OpenAI"), usage);
+    }
+
+    public async Task<(LlmValueResult ValueResult, TokenUsageResult TokenUsage)> ExtractValueAsync(
+        string userMessage,
+        DcrEvent matchedEvent,
+        IEnumerable<DcrEvent> otherOpenEvents,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(matchedEvent);
+        ArgumentNullException.ThrowIfNull(otherOpenEvents);
+        ValidateOptions(options);
+
+        var prompt = LlmIntentPrompt.BuildValuePrompt(userMessage, matchedEvent, otherOpenEvents);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
+        return (LlmIntentPrompt.ParseValueResult(text, "OpenAI"), usage);
+    }
+
+    public async Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(
+        string userMessage,
+        PendingAnswer draft,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(draft);
+        ValidateOptions(options);
+
+        var prompt = LlmIntentPrompt.BuildConfirmationPrompt(userMessage, draft);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
+        return (LlmIntentPrompt.ParseConfirmation(text, "OpenAI"), usage);
+    }
+
     public async Task<(LlmMatchResult MatchResult, TokenUsageResult TokenUsage)> ExtractIntentAsync(
         string userMessage,
         IEnumerable<DcrEvent> availableEvents,

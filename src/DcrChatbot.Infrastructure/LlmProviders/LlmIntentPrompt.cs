@@ -37,6 +37,7 @@ internal static class LlmIntentPrompt
             {
                 id = dcrEvent.Id,
                 label = dcrEvent.Label,
+                dataType = dcrEvent.DataType,
                 allowedValues = EventValidator.GetChoiceValues(dcrEvent)
             })
             .ToArray();
@@ -47,6 +48,13 @@ internal static class LlmIntentPrompt
 
             Available events:
             {JsonSerializer.Serialize(events)}
+
+            Match the user's message to the best available event and extract
+            only the value for that event. For example, if the user says
+            "Jeg er 18 år" for an integer event, return "18", not the full
+            sentence. For a date, return the date value. For free text, return
+            the user's relevant answer. Return null values when the message
+            does not answer an available event.
 
             Return only a JSON object with exactly these fields:
             MatchedEventId (string or null), ExtractedValue (string or null),
@@ -59,19 +67,114 @@ internal static class LlmIntentPrompt
             """;
     }
 
-    public static LlmMatchResult DeserializeMatchResult(string text, string providerName)
+    // Finder kun spørgsmålet; borgerens bekræftelse er selve svaret.
+    public static string BuildMatchEventPrompt(string userMessage, IEnumerable<DcrEvent> availableEvents)
     {
-        var json = text.Trim();
-        if (json.StartsWith("```", StringComparison.Ordinal))
+        var events = availableEvents
+            .Select(dcrEvent => new { id = dcrEvent.Id, label = dcrEvent.Label })
+            .ToArray();
+
+        return $"""
+            User message:
+            {userMessage}
+
+            Available events:
+            {JsonSerializer.Serialize(events)}
+
+            Identify which available event the user is talking about.
+            Do not extract or infer any value from the message.
+            Return only JSON with exactly one field:
+            MatchedEventId (string or null).
+            """;
+    }
+
+    public static string? ParseMatchedEventId(string text, string providerName) =>
+        Deserialize<MatchEventResult>(text, providerName).MatchedEventId;
+
+    // Udtrækker værdien til det spørgsmål botten har stillet, og eventuelle
+    // svar på de andre åbne spørgsmål, som borgeren nævner i samme besked.
+    public static string BuildValuePrompt(
+        string userMessage, DcrEvent matchedEvent, IEnumerable<DcrEvent> otherOpenEvents) =>
+        $"""
+            User message:
+            {userMessage}
+
+            Event:
+            {JsonSerializer.Serialize(DescribeEvent(matchedEvent))}
+
+            Other open events:
+            {JsonSerializer.Serialize(otherOpenEvents.Select(DescribeEvent))}
+
+            Extract only the value that answers this event. For example,
+            "Jeg er 18 år" for an integer event returns "18".
+            If the message also clearly answers some of the other open events,
+            put those answers in InferredReplies, keyed by their event id.
+            Never include the main event in InferredReplies, and never guess:
+            leave InferredReplies empty when nothing else is clearly answered.
+            For choice events, every value must be one of their allowedValues.
+            Return only JSON with exactly these fields:
+            ExtractedValue (string or null), Explanation (short string),
+            InferredReplies (object mapping event IDs to string values).
+            """;
+
+    public static LlmValueResult ParseValueResult(string text, string providerName)
+    {
+        var result = Deserialize<LlmValueResult>(text, providerName);
+        if (result.InferredReplies is null)
         {
-            var firstLineEnd = json.IndexOf('\n');
-            var lastFence = json.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstLineEnd >= 0 && lastFence > firstLineEnd)
-            {
-                json = json[(firstLineEnd + 1)..lastFence].Trim();
-            }
+            result.InferredReplies = new();
         }
 
+        if (result.Explanation is null)
+        {
+            result.Explanation = string.Empty;
+        }
+
+        return result;
+    }
+
+    private static object DescribeEvent(DcrEvent dcrEvent) => new
+    {
+        id = dcrEvent.Id,
+        label = dcrEvent.Label,
+        dataType = dcrEvent.DataType,
+        allowedValues = EventValidator.GetChoiceValues(dcrEvent)
+    };
+
+    // Afgør om borgerens fritekst bekræfter eller afviser kladden.
+    public static string BuildConfirmationPrompt(string userMessage, PendingAnswer draft) =>
+        $"""
+            User message:
+            {userMessage}
+
+            Pending confirmation:
+            {JsonSerializer.Serialize(new
+            {
+                question = draft.Question,
+                proposedValue = draft.ProposedValue
+            })}
+
+            Classify whether the user confirms or rejects this pending draft.
+            Understand natural language in the user's language, including
+            affirmative or negative explanations. Do not execute anything and
+            do not extract a new value.
+            Return only JSON with exactly one field:
+            IsConfirmed (boolean or null).
+            Return null when the message is unrelated, ambiguous, or asks for a revision.
+            """;
+
+    // Alt andet end true/false (fx null eller "måske") tolkes som uafklaret.
+    public static bool? ParseConfirmation(string text, string providerName) =>
+        Deserialize<ConfirmationResult>(text, providerName).IsConfirmed.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
+
+    public static LlmMatchResult DeserializeMatchResult(string text, string providerName)
+    {
+        var json = StripCodeFence(text);
         try
         {
             var result = JsonSerializer.Deserialize<LlmMatchResult>(json, MatchResultJsonOptions)
@@ -89,6 +192,47 @@ internal static class LlmIntentPrompt
                 $"{providerName} returned invalid structured JSON.",
                 exception);
         }
+    }
+
+    private static T Deserialize<T>(string text, string providerName)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(StripCodeFence(text), MatchResultJsonOptions)
+                ?? throw new LlmProviderException($"{providerName} returned an empty JSON result.");
+        }
+        catch (JsonException exception)
+        {
+            throw new LlmProviderException(
+                $"{providerName} returned invalid structured JSON.",
+                exception);
+        }
+    }
+
+    private static string StripCodeFence(string text)
+    {
+        var json = text.Trim();
+        if (json.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstLineEnd = json.IndexOf('\n');
+            var lastFence = json.LastIndexOf("```", StringComparison.Ordinal);
+            if (firstLineEnd >= 0 && lastFence > firstLineEnd)
+            {
+                json = json[(firstLineEnd + 1)..lastFence].Trim();
+            }
+        }
+
+        return json;
+    }
+
+    private sealed class MatchEventResult
+    {
+        public string? MatchedEventId { get; init; }
+    }
+
+    private sealed class ConfirmationResult
+    {
+        public JsonElement IsConfirmed { get; init; }
     }
 
     private sealed class LenientStringConverter : JsonConverter<string>

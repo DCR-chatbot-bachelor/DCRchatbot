@@ -18,8 +18,22 @@ export function DraftConfirmation({
     <div className="draft-card">
       {draft.question ? (
         <div>
-          <span className="draft-card__label">Spørger du om </span>
-          <strong>{draft.question}</strong>
+          {draft.isEventMatch ? (
+            <>
+              <span className="draft-card__label">
+                Jeg forstod, at din besked handler om
+              </span>
+              <strong>{draft.question}</strong>
+            </>
+          ) : (
+            <>
+              <span className="draft-card__label">Svarer du på </span>
+              <strong>{draft.question}</strong>
+              <p>
+                Dit svar: <strong>{draft.proposedValue}</strong>
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div>

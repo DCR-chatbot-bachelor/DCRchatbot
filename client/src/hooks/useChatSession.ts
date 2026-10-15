@@ -42,9 +42,16 @@ export function useChatSession() {
   }
 
   function applyResponse(response: ChatResponse) {
+    // The draft card already renders the confirmation question. Avoid
+    // displaying the same question again as a normal chat bubble. When a
+    // draft was already open, the response answers it (e.g. the FAQ answer)
+    // and must be shown, even if the next queued draft follows (FR-DCR-2).
+    const answersOpenDraft = pendingDraft !== null;
     setSessionId(response.sessionId);
     setPendingDraft(response.pendingDraft ?? null);
-    addMessage("bot", response.message);
+    if (!response.pendingDraft || answersOpenDraft) {
+      addMessage("bot", response.message);
+    }
   }
 
   async function run(

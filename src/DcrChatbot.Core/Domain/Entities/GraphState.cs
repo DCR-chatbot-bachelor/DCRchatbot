@@ -16,12 +16,15 @@ public class GraphState
     public IEnumerable<DcrEvent> ExecutedEvents => Events.Where(e => e.IsExecuted == true);
 
     /// <summary>
-    /// Finder det næste event der skal stilles til borgeren (FR-DCR-4).
-    /// Et event er pending hvis det er enabled og markeret pending,
-    /// eller enabled, productive og endnu ikke udført.
+    /// Finder alle events, der stadig skal besvares (FR-DCR-4).
+    /// Rækkefølgen fra grafen bevares, så formularspørgsmål kan stilles
+    /// sekventielt. Et allerede udført event er aldrig pending igen.
     /// </summary>
+    public IEnumerable<DcrEvent> GetPendingEvents() =>
+        Events.Where(IsPendingEvent).OrderBy(e => e.Sequence);
+
     public DcrEvent? GetPendingEvent() =>
-        Events.FirstOrDefault(IsPendingEvent);
+        GetPendingEvents().FirstOrDefault();
 
     /// <summary>
     /// Finder et event ved id. Falder tilbage til case-insensitive match,
@@ -36,5 +39,6 @@ public class GraphState
 
     private static bool IsPendingEvent(DcrEvent dcrEvent) =>
         dcrEvent.IsEnabled &&
-        (dcrEvent.IsPending || (dcrEvent.IsProductive && dcrEvent.IsExecuted != true));
+        dcrEvent.IsExecuted != true &&
+        (dcrEvent.IsPending || dcrEvent.IsProductive);
 }

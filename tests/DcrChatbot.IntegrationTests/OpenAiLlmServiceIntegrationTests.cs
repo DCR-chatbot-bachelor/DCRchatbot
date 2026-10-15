@@ -24,18 +24,7 @@ public sealed class OpenAiLlmServiceIntegrationTests
         string userMessage,
         string expectedEventId)
     {
-        var configuration = new ConfigurationBuilder()
-            .AddUserSecrets("DcrChatbot-WebApi")
-            .Build();
-        var options = configuration.GetSection(LlmOptions.SectionName).Get<LlmOptions>()
-            ?? throw new InvalidOperationException("Llm options were not found in User Secrets.");
-
-        if (string.IsNullOrWhiteSpace(options.OpenAi.ApiKey))
-        {
-            throw new InvalidOperationException(
-                "Llm:OpenAi:ApiKey is missing. Configure it with dotnet user-secrets before running integration tests.");
-        }
-
+        var options = LoadOptions();
         using var httpClient = new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
         var service = new OpenAiLlmService(httpClient);
         var availableEvents = new[]
@@ -52,5 +41,43 @@ public sealed class OpenAiLlmServiceIntegrationTests
         output.WriteLine($"Prompt tokens: {usage.PromptTokens}, completion tokens: {usage.CompletionTokens}");
 
         Assert.Equal(expectedEventId, result.MatchedEventId);
+    }
+
+    [Fact]
+    public async Task ExtractValueAsync_FindsInferredReplyInSameMessage()
+    {
+        var options = LoadOptions();
+        using var httpClient = new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
+        var service = new OpenAiLlmService(httpClient);
+
+        var (result, usage) = await service.ExtractValueAsync(
+            "Jeg er 18 år og bor i Danmark",
+            new DcrEvent { Id = "Age", Label = "Hvor gammel er du?", DataType = "int" },
+            [
+                new DcrEvent { Id = "Country", Label = "Hvilket land bor du i?", DataType = "choice", ChoiceValues = "Denmark (Denmark), Sweden (Sweden)" },
+                new DcrEvent { Id = "height", Label = "Hvor høj er du?", DataType = "int" }
+            ],
+            options);
+
+        output.WriteLine($"Value: {result.ExtractedValue}, inferred: {string.Join(", ", result.InferredReplies)}");
+        output.WriteLine($"Prompt tokens: {usage.PromptTokens}, completion tokens: {usage.CompletionTokens}");
+
+        Assert.Equal("18", result.ExtractedValue);
+        Assert.Equal("Denmark", result.InferredReplies["Country"]);
+        Assert.False(result.InferredReplies.ContainsKey("height"));
+    }
+
+    private static LlmOptions LoadOptions()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddUserSecrets("DcrChatbot-WebApi")
+            .Build();
+        var options = configuration.GetSection(LlmOptions.SectionName).Get<LlmOptions>()
+            ?? throw new InvalidOperationException("Llm options were not found in User Secrets.");
+
+        return string.IsNullOrWhiteSpace(options.OpenAi.ApiKey)
+            ? throw new InvalidOperationException(
+                "Llm:OpenAi:ApiKey is missing. Configure it with dotnet user-secrets before running integration tests.")
+            : options;
     }
 }

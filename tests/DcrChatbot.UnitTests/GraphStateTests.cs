@@ -47,6 +47,24 @@ public sealed class GraphStateTests
     }
 
     [Fact]
+    public void GetPendingEvents_ReturnsAllUnexecutedEventsInGraphOrder()
+    {
+        var state = new GraphState
+        {
+            Events =
+            [
+                new DcrEvent { Id = "second", Sequence = 2, IsEnabled = true, IsPending = true },
+                new DcrEvent { Id = "done", Sequence = 1, IsEnabled = true, IsPending = true, IsExecuted = true },
+                new DcrEvent { Id = "first", Sequence = 0, IsEnabled = true, IsPending = true }
+            ]
+        };
+
+        var result = state.GetPendingEvents().Select(e => e.Id).ToArray();
+
+        Assert.Equal(["first", "second"], result);
+    }
+
+    [Fact]
     public void GetEvent_ReturnsEvent_ForExactId()
     {
         var state = new GraphState
