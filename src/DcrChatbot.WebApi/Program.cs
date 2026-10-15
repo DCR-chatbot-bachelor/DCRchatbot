@@ -15,6 +15,9 @@ builder.Services
     .AddOptions<LlmOptions>()
     .Bind(builder.Configuration.GetSection(LlmOptions.SectionName))
      .ValidateDataAnnotations()
+     .Validate(
+         options => options.HasApiKeyForProvider(),
+         "API-nøglen for den valgte Llm:Provider mangler (Llm:ApiKey for Gemini, Llm:OpenAi:ApiKey for OpenAi).")
      .ValidateOnStart();
 
 builder.Services
@@ -42,11 +45,25 @@ builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProv
     client.BaseAddress = new Uri(dcrOptions.RootUrl, UriKind.Absolute);
     client.Timeout = TimeSpan.FromSeconds(30);
 });
-builder.Services.AddHttpClient<ILlmService, GeminiLlmService>(client =>
+// NFR-2: LLM-udbyderen vælges via Llm:Provider uden ændringer i Core.
+var llmProvider = builder.Configuration.GetValue<LlmProvider?>(
+    $"{LlmOptions.SectionName}:{nameof(LlmOptions.Provider)}") ?? LlmProvider.Gemini;
+if (llmProvider == LlmProvider.OpenAi)
 {
-    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/", UriKind.Absolute);
-    client.Timeout = TimeSpan.FromSeconds(60);
-});
+    builder.Services.AddHttpClient<ILlmService, OpenAiLlmService>(client =>
+    {
+        client.BaseAddress = new Uri("https://api.openai.com/", UriKind.Absolute);
+        client.Timeout = TimeSpan.FromSeconds(60);
+    });
+}
+else
+{
+    builder.Services.AddHttpClient<ILlmService, GeminiLlmService>(client =>
+    {
+        client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/", UriKind.Absolute);
+        client.Timeout = TimeSpan.FromSeconds(60);
+    });
+}
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 

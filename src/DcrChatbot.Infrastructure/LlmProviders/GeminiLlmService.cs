@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
@@ -16,13 +14,6 @@ public sealed class GeminiLlmService : ILlmService
     {
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-
-    // Modellen svarer af og til med true eller 42 i stedet for "true"/"42";
-    // det skal ikke vælte hele forespørgslen med en 500.
-    private static readonly JsonSerializerOptions MatchResultJsonOptions = new(JsonOptions)
-    {
-        Converters = { new LenientStringConverter() }
     };
 
     private readonly HttpClient httpClient;
@@ -42,40 +33,12 @@ public sealed class GeminiLlmService : ILlmService
         ArgumentNullException.ThrowIfNull(availableEvents);
         ValidateOptions(options);
 
-        // allowedValues kommer fra samme parsing som EventValidator bruger,
-        // så modellen kun kan foreslå værdier, guardrailen også accepterer.
-        // Description sendes ikke: det er DCR's dokumentationsfelt og kan
-        // indeholde interne noter, som ikke skal ud til en ekstern udbyder.
-        var events = availableEvents
-            .Select(dcrEvent => new
-            {
-                id = dcrEvent.Id,
-                label = dcrEvent.Label,
-                allowedValues = EventValidator.GetChoiceValues(dcrEvent)
-            })
-            .ToArray();
-        var prompt = $"""
-            User message:
-            {userMessage}
-
-            Available events:
-            {JsonSerializer.Serialize(events)}
-
-            Return only a JSON object with exactly these fields:
-            MatchedEventId (string or null), ExtractedValue (string or null),
-            InferredReplies (object mapping event IDs to string values),
-            IsFaqQuestion (boolean), UserIntentExplanation (short string).
-            MatchedEventId must be null when no available event matches.
-            ExtractedValue must be exactly one of the matched event's allowedValues,
-            or null when the user did not clearly give one of them.
-            All values in ExtractedValue and InferredReplies must be JSON strings.
-            """;
-
+        var prompt = LlmIntentPrompt.BuildIntentPrompt(userMessage, availableEvents);
         var (text, usage) = await SendPromptAsync(
             prompt,
             options,
             cancellationToken);
-        var result = DeserializeMatchResult(text);
+        var result = LlmIntentPrompt.DeserializeMatchResult(text, "Gemini");
         return (result, usage);
     }
 
@@ -102,7 +65,7 @@ public sealed class GeminiLlmService : ILlmService
         {
             SystemInstruction = new GeminiContent
             {
-                Parts = [new GeminiPart { Text = BuildSystemPrompt(options) }]
+                Parts = [new GeminiPart { Text = LlmIntentPrompt.BuildSystemPrompt(options) }]
             },
             Contents =
             [
@@ -157,43 +120,6 @@ public sealed class GeminiLlmService : ILlmService
         return (text, usage);
     }
 
-    private static LlmMatchResult DeserializeMatchResult(string text)
-    {
-        var json = text.Trim();
-        if (json.StartsWith("```", StringComparison.Ordinal))
-        {
-            var firstLineEnd = json.IndexOf('\n');
-            var lastFence = json.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstLineEnd >= 0 && lastFence > firstLineEnd)
-            {
-                json = json[(firstLineEnd + 1)..lastFence].Trim();
-            }
-        }
-
-        try
-        {
-            var result = JsonSerializer.Deserialize<LlmMatchResult>(json, MatchResultJsonOptions)
-                ?? throw new LlmProviderException("Gemini returned an empty JSON result.");
-            if (result.InferredReplies is null)
-            {
-                result.InferredReplies = new();
-            }
-
-            return result;
-        }
-        catch (JsonException exception)
-        {
-            throw new LlmProviderException(
-                "Gemini returned invalid structured JSON.",
-                exception);
-        }
-    }
-
-    private static string BuildSystemPrompt(LlmOptions options) =>
-        string.IsNullOrWhiteSpace(options.SystemPrompt)
-            ? "You map user messages to available DCR events. Never invent event IDs."
-            : options.SystemPrompt;
-
     private static void ValidateOptions(LlmOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -204,23 +130,6 @@ public sealed class GeminiLlmService : ILlmService
         {
             throw new ArgumentOutOfRangeException(nameof(options.MaxOutputTokens));
         }
-    }
-
-    private sealed class LenientStringConverter : JsonConverter<string>
-    {
-        public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        {
-            if (reader.TokenType == JsonTokenType.String)
-            {
-                return reader.GetString();
-            }
-
-            using var element = JsonDocument.ParseValue(ref reader);
-            return element.RootElement.GetRawText();
-        }
-
-        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
-            writer.WriteStringValue(value);
     }
 
     private sealed class GeminiRequest
@@ -263,18 +172,5 @@ public sealed class GeminiLlmService : ILlmService
     {
         public int PromptTokenCount { get; init; }
         public int CandidatesTokenCount { get; init; }
-    }
-}
-
-public sealed class LlmProviderException : Exception
-{
-    public LlmProviderException(string message)
-        : base(message)
-    {
-    }
-
-    public LlmProviderException(string message, Exception innerException)
-        : base(message, innerException)
-    {
     }
 }
