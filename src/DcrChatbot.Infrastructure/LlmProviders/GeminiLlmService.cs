@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
@@ -18,13 +16,6 @@ public sealed class GeminiLlmService : ILlmService
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    // Modellen svarer af og til med true eller 42 i stedet for "true"/"42";
-    // det skal ikke vælte hele forespørgslen med en 500.
-    private static readonly JsonSerializerOptions MatchResultJsonOptions = new(JsonOptions)
-    {
-        Converters = { new LenientStringConverter() }
-    };
-
     private readonly HttpClient httpClient;
 
     public GeminiLlmService(HttpClient httpClient)
@@ -38,32 +29,13 @@ public sealed class GeminiLlmService : ILlmService
         LlmOptions options,
         CancellationToken cancellationToken = default)
     {
-        var events = availableEvents.Select(dcrEvent => new
-        {
-            id = dcrEvent.Id,
-            label = dcrEvent.Label
-        }).ToArray();
-        var prompt = $"""
-            User message:
-            {userMessage}
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(availableEvents);
+        ValidateOptions(options);
 
-            Available events:
-            {JsonSerializer.Serialize(events)}
-
-            Identify which available event the user is talking about.
-            Do not extract or infer any value from the message.
-            Return only JSON with exactly one field:
-            MatchedEventId (string or null).
-            """;
-
+        var prompt = LlmIntentPrompt.BuildMatchEventPrompt(userMessage, availableEvents);
         var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
-        using var document = JsonDocument.Parse(text);
-        var matchedEventId = document.RootElement.TryGetProperty("MatchedEventId", out var value)
-            ? value.GetString()
-            : document.RootElement.TryGetProperty("matchedEventId", out value)
-                ? value.GetString()
-                : null;
-        return (matchedEventId, usage);
+        return (LlmIntentPrompt.ParseMatchedEventId(text, "Gemini"), usage);
     }
 
     public async Task<(string? ExtractedValue, string Explanation, TokenUsageResult TokenUsage)> ExtractValueAsync(
@@ -72,29 +44,14 @@ public sealed class GeminiLlmService : ILlmService
         LlmOptions options,
         CancellationToken cancellationToken = default)
     {
-        var prompt = $"""
-            User message:
-            {userMessage}
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(matchedEvent);
+        ValidateOptions(options);
 
-            Event:
-            {JsonSerializer.Serialize(new
-            {
-                id = matchedEvent.Id,
-                label = matchedEvent.Label,
-                dataType = matchedEvent.DataType,
-                allowedValues = EventValidator.GetChoiceValues(matchedEvent)
-            })}
-
-            Extract only the value that answers this event. For example,
-            "Jeg er 18 år" for an integer event returns "18".
-            Return only JSON with exactly these fields:
-            ExtractedValue (string or null), Explanation (short string).
-            """;
-
+        var prompt = LlmIntentPrompt.BuildValuePrompt(userMessage, matchedEvent);
         var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
-        var result = JsonSerializer.Deserialize<LlmValueResult>(text, MatchResultJsonOptions)
-            ?? throw new LlmProviderException("Gemini returned an empty value result.");
-        return (result.ExtractedValue, result.Explanation, usage);
+        var (value, explanation) = LlmIntentPrompt.ParseValueResult(text, "Gemini");
+        return (value, explanation, usage);
     }
 
     public async Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(
@@ -103,41 +60,13 @@ public sealed class GeminiLlmService : ILlmService
         LlmOptions options,
         CancellationToken cancellationToken = default)
     {
-        var prompt = $"""
-            User message:
-            {userMessage}
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(draft);
+        ValidateOptions(options);
 
-            Pending confirmation:
-            {JsonSerializer.Serialize(new
-            {
-                question = draft.Question,
-                proposedValue = draft.ProposedValue
-            })}
-
-            Classify whether the user confirms or rejects this pending draft.
-            Understand natural language in the user's language, including
-            affirmative or negative explanations. Do not execute anything and
-            do not extract a new value.
-            Return only JSON with exactly one field:
-            IsConfirmed (boolean or null).
-            Return null when the message is unrelated, ambiguous, or asks for a revision.
-            """;
-
+        var prompt = LlmIntentPrompt.BuildConfirmationPrompt(userMessage, draft);
         var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
-        using var document = JsonDocument.Parse(text);
-        var root = document.RootElement;
-        var property = root.TryGetProperty("IsConfirmed", out var value)
-            ? value
-            : root.TryGetProperty("isConfirmed", out value)
-                ? value
-                : default;
-        bool? result = property.ValueKind switch
-        {
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            _ => null
-        };
-        return (result, usage);
+        return (LlmIntentPrompt.ParseConfirmation(text, "Gemini"), usage);
     }
 
     public async Task<(LlmMatchResult MatchResult, TokenUsageResult TokenUsage)> ExtractIntentAsync(
@@ -150,48 +79,12 @@ public sealed class GeminiLlmService : ILlmService
         ArgumentNullException.ThrowIfNull(availableEvents);
         ValidateOptions(options);
 
-        // allowedValues kommer fra samme parsing som EventValidator bruger,
-        // så modellen kun kan foreslå værdier, guardrailen også accepterer.
-        // Description sendes ikke: det er DCR's dokumentationsfelt og kan
-        // indeholde interne noter, som ikke skal ud til en ekstern udbyder.
-        var events = availableEvents
-            .Select(dcrEvent => new
-            {
-                id = dcrEvent.Id,
-                label = dcrEvent.Label,
-                dataType = dcrEvent.DataType,
-                allowedValues = EventValidator.GetChoiceValues(dcrEvent)
-            })
-            .ToArray();
-        var prompt = $"""
-            User message:
-            {userMessage}
-
-            Available events:
-            {JsonSerializer.Serialize(events)}
-
-            Match the user's message to the best available event and extract
-            only the value for that event. For example, if the user says
-            "Jeg er 18 år" for an integer event, return "18", not the full
-            sentence. For a date, return the date value. For free text, return
-            the user's relevant answer. Return null values when the message
-            does not answer an available event.
-
-            Return only a JSON object with exactly these fields:
-            MatchedEventId (string or null), ExtractedValue (string or null),
-            InferredReplies (object mapping event IDs to string values),
-            IsFaqQuestion (boolean), UserIntentExplanation (short string).
-            MatchedEventId must be null when no available event matches.
-            ExtractedValue must be exactly one of the matched event's allowedValues,
-            or null when the user did not clearly give one of them.
-            All values in ExtractedValue and InferredReplies must be JSON strings.
-            """;
-
+        var prompt = LlmIntentPrompt.BuildIntentPrompt(userMessage, availableEvents);
         var (text, usage) = await SendPromptAsync(
             prompt,
             options,
             cancellationToken);
-        var result = DeserializeMatchResult(text);
+        var result = LlmIntentPrompt.DeserializeMatchResult(text, "Gemini");
         return (result, usage);
     }
 
@@ -218,7 +111,7 @@ public sealed class GeminiLlmService : ILlmService
         {
             SystemInstruction = new GeminiContent
             {
-                Parts = [new GeminiPart { Text = BuildSystemPrompt(options) }]
+                Parts = [new GeminiPart { Text = LlmIntentPrompt.BuildSystemPrompt(options) }]
             },
             Contents =
             [
@@ -273,43 +166,6 @@ public sealed class GeminiLlmService : ILlmService
         return (text, usage);
     }
 
-    private static LlmMatchResult DeserializeMatchResult(string text)
-    {
-        var json = text.Trim();
-        if (json.StartsWith("```", StringComparison.Ordinal))
-        {
-            var firstLineEnd = json.IndexOf('\n');
-            var lastFence = json.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstLineEnd >= 0 && lastFence > firstLineEnd)
-            {
-                json = json[(firstLineEnd + 1)..lastFence].Trim();
-            }
-        }
-
-        try
-        {
-            var result = JsonSerializer.Deserialize<LlmMatchResult>(json, MatchResultJsonOptions)
-                ?? throw new LlmProviderException("Gemini returned an empty JSON result.");
-            if (result.InferredReplies is null)
-            {
-                result.InferredReplies = new();
-            }
-
-            return result;
-        }
-        catch (JsonException exception)
-        {
-            throw new LlmProviderException(
-                "Gemini returned invalid structured JSON.",
-                exception);
-        }
-    }
-
-    private static string BuildSystemPrompt(LlmOptions options) =>
-        string.IsNullOrWhiteSpace(options.SystemPrompt)
-            ? "You map user messages to available DCR events. Never invent event IDs."
-            : options.SystemPrompt;
-
     private static void ValidateOptions(LlmOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -320,23 +176,6 @@ public sealed class GeminiLlmService : ILlmService
         {
             throw new ArgumentOutOfRangeException(nameof(options.MaxOutputTokens));
         }
-    }
-
-    private sealed class LenientStringConverter : JsonConverter<string>
-    {
-        public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        {
-            if (reader.TokenType == JsonTokenType.String)
-            {
-                return reader.GetString();
-            }
-
-            using var element = JsonDocument.ParseValue(ref reader);
-            return element.RootElement.GetRawText();
-        }
-
-        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
-            writer.WriteStringValue(value);
     }
 
     private sealed class GeminiRequest
@@ -379,24 +218,5 @@ public sealed class GeminiLlmService : ILlmService
     {
         public int PromptTokenCount { get; init; }
         public int CandidatesTokenCount { get; init; }
-    }
-
-    private sealed class LlmValueResult
-    {
-        public string? ExtractedValue { get; init; }
-        public string Explanation { get; init; } = string.Empty;
-    }
-}
-
-public sealed class LlmProviderException : Exception
-{
-    public LlmProviderException(string message)
-        : base(message)
-    {
-    }
-
-    public LlmProviderException(string message, Exception innerException)
-        : base(message, innerException)
-    {
     }
 }

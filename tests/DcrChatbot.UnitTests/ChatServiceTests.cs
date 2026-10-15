@@ -467,6 +467,10 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         SetupLlmMatch("minSU", null);
         await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "minsu?" });
 
+        await Assert.ThrowsAsync<ChatConflictException>(() =>
+            service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad med boligstøtte?" }));
+    }
+
     [Fact]
     public async Task ConfirmDraft_WhenNoMorePendingEvents_ShowsConclusionWithDisplayValue()
     {
