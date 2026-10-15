@@ -27,14 +27,13 @@ export function DraftConfirmation({
             </>
           ) : (
             <>
-              <span className="draft-card__label">Jeg forstod dit svar som</span>
-              <strong>{draft.proposedValue}</strong>
+              <span className="draft-card__label">Svarer du på </span>
+              <strong>{draft.question}</strong>
               <p>
-                Det gælder spørgsmålet: <strong>{draft.question}</strong>
+                Dit svar: <strong>{draft.proposedValue}</strong>
               </p>
             </>
           )}
-          {draft.explanation && <p>{draft.explanation}</p>}
         </div>
       ) : (
         <div>

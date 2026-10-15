@@ -414,7 +414,6 @@ public sealed class ChatService(
                 EventId = dcrEvent.Id,
                 Question = dcrEvent.Label,
                 ProposedValue = value,
-                Explanation = "Udledt fra din besked.",
                 IsAutoInferred = true
             });
         }
