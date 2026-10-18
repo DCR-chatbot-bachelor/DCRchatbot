@@ -23,11 +23,25 @@ export interface DcrEvent {
   allowedValues: string[]
 }
 
+export interface AnsweredQuestion {
+  eventId: string
+  question: string
+  value: string
+}
+
 export interface ChatMessage {
   id: string
   sender: 'user' | 'bot'
   content: string
   timestamp: string
+  /** De bekræftede svar, beskeden gav; hvert kan rettes (FR-HITL-2). */
+  answers?: MessageAnswer[]
+}
+
+export interface MessageAnswer {
+  answer: AnsweredQuestion
+  /** Svaret er siden rettet og gælder ikke længere. */
+  isSuperseded: boolean
 }
 
 export interface PendingAnswer {
@@ -35,6 +49,8 @@ export interface PendingAnswer {
   eventId: string
   question?: string | null
   proposedValue: string
+  /** Det nuværende svar, når kladden retter et tidligere svar. */
+  previousValue?: string | null
   explanation?: string | null
   isConfirmed: boolean
   isAutoInferred: boolean
@@ -47,6 +63,7 @@ export interface ChatRequest {
   mode: ExecutionMode
   action?: 'confirm' | 'reject' | 'revise' | null
   targetPendingAnswerId?: string | null
+  eventId?: string | null
 }
 
 export interface ChatResponse {
@@ -55,6 +72,7 @@ export interface ChatResponse {
   mode: ExecutionMode
   pendingDraft?: PendingAnswer | null
   requiresConfirmation: boolean
+  confirmedAnswer?: AnsweredQuestion | null
   availableEvents: DcrEvent[]
   executedEvents: DcrEvent[]
   isEnded: boolean

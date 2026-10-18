@@ -25,4 +25,13 @@ public interface IChatService
         string sessionId,
         ChatRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Laver en kladde, der retter et tidligere udført svar (FR-HITL-2).
+    /// Kan svaret ikke længere rettes, forklarer svaret hvorfor.
+    /// </summary>
+    Task<ChatResponse> EditAnswerAsync(
+        string sessionId,
+        ChatRequest request,
+        CancellationToken cancellationToken = default);
 }

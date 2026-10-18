@@ -507,7 +507,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
                     new DcrEvent
                     {
                         Id = conclusion.Id, Label = conclusion.Label, Value = conclusion.Value, DisplayValue = conclusion.DisplayValue,
-                        DataType = "label", IsEnabled = true, IsExecuted = conclusionExecuted ? true : null
+                        DataType = "label", IsEnabled = true, Included = true, IsExecuted = conclusionExecuted ? true : null
                     }
                 ]
             });
@@ -637,6 +637,147 @@ public async Task RejectDraft_DoesNotExecuteEvent()
             Times.Never);
     }
 
+    [Fact]
+    public async Task ConfirmDraft_ReturnsTheConfirmedAnswer_SoItCanBeEdited()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        var response = await AnswerAsync(session, "18");
+
+        Assert.Equal("Age", response.ConfirmedAnswer!.EventId);
+        Assert.Equal("Hvor gammel er du?", response.ConfirmedAnswer.Question);
+        Assert.Equal("18", response.ConfirmedAnswer.Value);
+    }
+
+    [Fact]
+    public async Task EditAnswer_CreatesRevisionDraft_AndConfirmExecutesTheNewValue()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        SetupValueExtraction("24");
+
+        var draft = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "jeg er 24" });
+
+        Assert.Equal("Age", draft.PendingDraft!.EventId);
+        Assert.Equal("18", draft.PendingDraft.PreviousValue);
+        Assert.Equal("24", draft.PendingDraft.ProposedValue);
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "Age", "24", It.IsAny<CancellationToken>()), Times.Never);
+
+        var confirmed = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft.Id);
+
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "Age", "24", It.IsAny<CancellationToken>()), Times.Once);
+        Assert.StartsWith("Dit svar på 'Hvor gammel er du?' er ændret fra '18' til '24'.", confirmed.Message);
+        Assert.Equal("24", confirmed.ConfirmedAnswer!.Value);
+    }
+
+    [Fact]
+    public async Task EditAnswer_ClearsDependentAnswers_AndNamesThem()
+    {
+        // Grafens regel: er man under 18, er land og højde ikke relevante.
+        var (session, graph) = await StartFormSessionAsync();
+        graph.OnExecute = (g, id, value) =>
+        {
+            if (id == "Age" && int.TryParse(value, out var age) && age < 18)
+            {
+                g.Excluded.Add("Country");
+                g.Excluded.Add("height");
+            }
+        };
+
+        // Alder og land er besvaret; højden ligger som afledt svar i køen.
+        SetupValueExtraction("18", new() { ["height"] = "180" });
+        var first = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg er 18 og 180 høj" });
+        await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+        graph.Execute("Country", "Denmark");
+
+        SetupValueExtraction("15");
+        var revision = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "jeg er 15" });
+        var response = await service.ConfirmDraftAsync(session.SessionId, revision.PendingDraft!.Id);
+
+        Assert.Contains(
+            "Det betyder, at disse svar ikke længere gælder:\n- Hvilket land bor du i?\n- Hvor høj er du?",
+            response.Message);
+        Assert.Null(response.PendingDraft);
+        var persisted = await sessionStore.GetSessionAsync(session.SessionId);
+        Assert.Empty(persisted!.PendingAnswersQueue);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "height", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task EditAnswer_WhenEventIsNoLongerEnabled_ExplainsWhy_WithoutDraft()
+    {
+        var (session, graph) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        graph.Disabled.Add("Age");
+        llmService.Invocations.Clear();
+
+        var response = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "jeg er 24" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Contains("kan ikke rettes lige nu", response.Message);
+        llmService.Verify(
+            s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task EditAnswer_WhenEventIsExcluded_ExplainsThatItIsNoLongerPartOfTheFlow()
+    {
+        var (session, graph) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        graph.Excluded.Add("Age");
+
+        var response = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "jeg er 24" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Contains("ikke længere en del af forløbet", response.Message);
+    }
+
+    [Fact]
+    public async Task EditAnswer_WhenQuestionIsNotAnswered_HasNothingToEdit()
+    {
+        var (session, _) = await StartFormSessionAsync();
+
+        var response = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Country", Message = "Sverige" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Contains("ikke svaret på", response.Message);
+    }
+
+    [Fact]
+    public async Task EditAnswer_WithSameValue_DoesNotCreateDraft()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        SetupValueExtraction("18");
+
+        var response = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "18" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Contains("er allerede '18'", response.Message);
+    }
+
+    [Fact]
+    public async Task EditAnswer_WithInvalidValue_DoesNotCreateDraft()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        SetupValueExtraction("atten og et halvt");
+
+        var response = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "atten og et halvt" });
+
+        Assert.Null(response.PendingDraft);
+    }
+
+    // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.
+    private async Task<ChatResponse> AnswerAsync(ChatSession session, string value)
+    {
+        SetupValueExtraction(value);
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = value });
+        return await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+    }
+
     private async Task<ChatSession> StartSessionAsync(GraphState graphState)
     {
         dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -697,9 +838,15 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     // et udført event er ikke længere pending, og events kan slås fra.
     private sealed class FakeFormGraph
     {
-        private readonly HashSet<string> executed = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string?> executed = new(StringComparer.OrdinalIgnoreCase);
 
         public HashSet<string> Disabled { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public HashSet<string> Excluded { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        // Lader en test efterligne grafens regler, fx at en alder under 18
+        // udelukker spørgsmålet om land.
+        public Action<FakeFormGraph, string, string?>? OnExecute { get; set; }
 
         public GraphState State() => new()
         {
@@ -711,7 +858,11 @@ public async Task RejectDraft_DoesNotExecuteEvent()
             ]
         };
 
-        public void Execute(string eventId) => executed.Add(eventId);
+        public void Execute(string eventId, string? value = null)
+        {
+            executed[eventId] = value;
+            OnExecute?.Invoke(this, eventId, value);
+        }
 
         private DcrEvent Question(string id, string label, string dataType, int sequence, string choiceValues = "") => new()
         {
@@ -720,9 +871,12 @@ public async Task RejectDraft_DoesNotExecuteEvent()
             DataType = dataType,
             Sequence = sequence,
             ChoiceValues = choiceValues,
-            IsEnabled = !Disabled.Contains(id),
-            IsPending = !executed.Contains(id),
-            IsExecuted = executed.Contains(id) ? true : null
+            Roles = "User",
+            Included = !Excluded.Contains(id),
+            IsEnabled = !Disabled.Contains(id) && !Excluded.Contains(id),
+            IsPending = !executed.ContainsKey(id),
+            IsExecuted = executed.ContainsKey(id) ? true : null,
+            Value = executed.GetValueOrDefault(id)
         };
     }
 
@@ -740,7 +894,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
             .ReturnsAsync(() => graph.State());
         dcrRepository
             .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) => graph.Execute(id))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, value, _) => graph.Execute(id, value))
             .ReturnsAsync(true);
         return (session, graph);
     }

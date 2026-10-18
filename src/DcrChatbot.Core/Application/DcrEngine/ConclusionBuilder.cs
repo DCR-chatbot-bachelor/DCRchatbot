@@ -28,7 +28,12 @@ public static class ConclusionBuilder
 {
     public static Conclusion Build(GraphState? state)
     {
-        var executed = state?.ExecutedEvents.OrderBy(e => e.Sequence).ToList() ?? [];
+        // Et udført event, som grafen siden har udelukket (fx efter en
+        // rettelse, FR-HITL-2), gælder ikke længere og kommer ikke med.
+        var executed = state?.ExecutedEvents
+            .Where(e => e.Included)
+            .OrderBy(e => e.Sequence)
+            .ToList() ?? [];
 
         // Udførte labels er resultater og svar, botten har vist; teksten er
         // grafens beregnede værdi, hvis den har én, ellers selve labelen.

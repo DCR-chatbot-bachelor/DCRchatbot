@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   confirmChatDraft,
+  editChatAnswer,
   rejectChatDraft,
   sendChatMessage,
   startChat,
 } from "../api/chatApi";
 import type {
+  AnsweredQuestion,
   ChatMessage,
   ChatResponse,
   ExecutionMode,
@@ -24,6 +26,34 @@ function createMessage(
   };
 }
 
+// Knytter et bekræftet svar til den besked, det kom fra, og markerer
+// tidligere svar på samme spørgsmål som rettet (FR-HITL-2).
+function attachAnswer(
+  messages: ChatMessage[],
+  sourceMessageId: string | null,
+  answer: AnsweredQuestion,
+): ChatMessage[] {
+  const lastUserMessage = [...messages].reverse().find((m) => m.sender === "user");
+  const targetId = messages.some((m) => m.id === sourceMessageId)
+    ? sourceMessageId
+    : lastUserMessage?.id;
+
+  return messages.map((message) => {
+    const answers = (message.answers ?? []).map((existing) =>
+      existing.answer.eventId === answer.eventId
+        ? { ...existing, isSuperseded: true }
+        : existing,
+    );
+    return {
+      ...message,
+      answers:
+        message.id === targetId
+          ? [...answers, { answer, isSuperseded: false }]
+          : message.answers && answers,
+    };
+  });
+}
+
 /**
  * Holder samtalens tilstand (session-id, beskeder, kladde) og står for alle
  * kald til chat-API'et, så komponenterne kun skal vise data og kalde handlinger.
@@ -35,10 +65,15 @@ export function useChatSession() {
   const [pendingDraft, setPendingDraft] = useState<PendingAnswer | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingAnswer, setEditingAnswer] = useState<AnsweredQuestion | null>(null);
+  // Beskeden, kladderne i køen kom fra; bekræftede svar knyttes til den.
+  const draftSourceMessageId = useRef<string | null>(null);
 
   function addMessage(sender: ChatMessage["sender"], content: string) {
-    if (!content.trim()) return;
-    setMessages((current) => [...current, createMessage(sender, content)]);
+    if (!content.trim()) return null;
+    const message = createMessage(sender, content);
+    setMessages((current) => [...current, message]);
+    return message.id;
   }
 
   function applyResponse(response: ChatResponse) {
@@ -49,6 +84,12 @@ export function useChatSession() {
     const answersOpenDraft = pendingDraft !== null;
     setSessionId(response.sessionId);
     setPendingDraft(response.pendingDraft ?? null);
+    const confirmedAnswer = response.confirmedAnswer;
+    if (confirmedAnswer) {
+      setMessages((current) =>
+        attachAnswer(current, draftSourceMessageId.current, confirmedAnswer),
+      );
+    }
     if (!response.pendingDraft || answersOpenDraft) {
       addMessage("bot", response.message);
     }
@@ -74,6 +115,8 @@ export function useChatSession() {
     setSessionId(null);
     setMessages([]);
     setPendingDraft(null);
+    setEditingAnswer(null);
+    draftSourceMessageId.current = null;
     setMode(selectedMode);
     await run(
       () => startChat(graphId, selectedMode),
@@ -84,11 +127,34 @@ export function useChatSession() {
   async function sendMessage(text: string) {
     const message = text.trim();
     if (!message || !sessionId || isSending) return;
-    addMessage("user", message);
+    const messageId = addMessage("user", message);
+    // En ny besked laver nye kladder; et skrevet "ja" til en åben kladde
+    // gør ikke, så svarene hører stadig til den oprindelige besked.
+    if (pendingDraft === null || editingAnswer) {
+      draftSourceMessageId.current = messageId;
+    }
+    if (editingAnswer) {
+      const eventId = editingAnswer.eventId;
+      setEditingAnswer(null);
+      await run(
+        () => editChatAnswer({ sessionId, message, mode, eventId }),
+        "Rettelsen kunne ikke sendes.",
+      );
+      return;
+    }
     await run(
       () => sendChatMessage({ sessionId, message, mode }),
       "Beskeden kunne ikke sendes.",
     );
+  }
+
+  // Næste besked bliver det nye svar på spørgsmålet (FR-HITL-2).
+  function startEditing(answer: AnsweredQuestion) {
+    setEditingAnswer(answer);
+  }
+
+  function cancelEditing() {
+    setEditingAnswer(null);
   }
 
   // FR-HITL-1: kladden når først DCR, når borgeren aktivt bekræfter den.
@@ -114,9 +180,12 @@ export function useChatSession() {
     pendingDraft,
     isSending,
     error,
+    editingAnswer,
     start,
     sendMessage,
     confirmDraft,
     rejectDraft,
+    startEditing,
+    cancelEditing,
   };
 }

@@ -25,6 +25,15 @@ export function DraftConfirmation({
               </span>
               <strong>{draft.question}</strong>
             </>
+          ) : draft.previousValue != null ? (
+            <>
+              <span className="draft-card__label">Vil du ændre dit svar på</span>
+              <strong>{draft.question}</strong>
+              <p>
+                Fra <strong>{draft.previousValue}</strong> til{" "}
+                <strong>{draft.proposedValue}</strong>
+              </p>
+            </>
           ) : (
             <>
               <span className="draft-card__label">Svarer du på </span>

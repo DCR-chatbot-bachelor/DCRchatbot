@@ -15,4 +15,9 @@ public class ChatRequest
     /// </summary>
     public string? Action { get; set; }
     public string? TargetPendingAnswerId { get; set; }
+
+    /// <summary>
+    /// Eventet med det tidligere svar, borgeren vil rette (FR-HITL-2).
+    /// </summary>
+    public string? EventId { get; set; }
 }
