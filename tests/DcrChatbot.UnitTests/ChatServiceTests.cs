@@ -490,14 +490,25 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         SetupLlmMatch("height", "180");
         var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "180" });
 
+        // Som i DCR: højden er udført med værdien 180, og konklusionen er
+        // først udført, når botten selv har udført den.
+        var conclusionExecuted = false;
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A4", "", It.IsAny<CancellationToken>()))
+            .Callback(() => conclusionExecuted = true)
+            .ReturnsAsync(true);
         dcrRepository
             .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new GraphState
+            .ReturnsAsync(() => new GraphState
             {
                 IsAccepting = true,
                 Events = [
-                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, IsPending = false },
-                    conclusion
+                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, IsPending = false, Value = "180" },
+                    new DcrEvent
+                    {
+                        Id = conclusion.Id, Label = conclusion.Label, Value = conclusion.Value, DisplayValue = conclusion.DisplayValue,
+                        DataType = "label", IsEnabled = true, IsExecuted = conclusionExecuted ? true : null
+                    }
                 ]
             });
 
@@ -505,6 +516,35 @@ public async Task RejectDraft_DoesNotExecuteEvent()
 
         Assert.Equal("Can you buy alcohol? Yes", response.Message);
         Assert.True(response.IsEnded);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_ConclusionLeavesOutResultThatCouldNotBeExecuted()
+    {
+        // FR-DCR-5: fejler udførslen af resultatet, må det ikke stå i
+        // konklusionen, som om det var sket.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events = [new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsPending = true }]
+        });
+        SetupLlmMatch("height", "180");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "180" });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A4", "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                Events = [
+                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, Value = "180" },
+                    new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", IsEnabled = true, Value = "Can you buy alcohol? Yes" }
+                ]
+            });
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Tak for dine svar. Forløbet er nu afsluttet.", response.Message);
     }
 
     [Fact]

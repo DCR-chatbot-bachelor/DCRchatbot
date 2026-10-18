@@ -115,6 +115,26 @@ public sealed class DcrRepositoryClientTests
         Assert.Equal(["1000", "2000"], dcrEvent.AllowedValues);
     }
 
+    [Theory]
+    [InlineData("\"2026-10-18T23:52:26.5425687+02:00\"", true)]
+    [InlineData("null", null)]
+    [InlineData("\"\"", null)]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    public async Task GetGraphStateAsync_ReadsExecutedTimestampAsExecuted(string executedJson, bool? expected)
+    {
+        // DCR.Repo sender tidspunktet for udførslen, ikke en boolean.
+        var handler = new RecordingHandler(_ => Response(
+            "{\"isAccepting\":true,\"events\":[{\"id\":\"Age\",\"enabled\":true,\"pending\":false," +
+            $"\"executed\":{executedJson},\"label\":\"How old are you?\",\"dataType\":\"int\",\"value\":\"18\"}}]}}",
+            "application/json"));
+        var client = CreateClient(handler);
+
+        var state = await client.GetGraphStateAsync("graph-1", "simulation-2");
+
+        Assert.Equal(expected, Assert.Single(state.Events).IsExecuted);
+    }
+
     [Fact]
     public async Task ExecuteEventAsync_SendsExpectedPayload()
     {
