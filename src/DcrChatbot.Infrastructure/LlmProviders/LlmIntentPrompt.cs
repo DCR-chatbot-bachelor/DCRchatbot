@@ -112,6 +112,18 @@ internal static class LlmIntentPrompt
 
             Extract only the value that answers this event. For example,
             "Jeg er 18 år" for an integer event returns "18".
+            Do not judge whether the answer is complete, realistic or correct:
+            the citizen confirms it afterwards. For a text event, return what
+            the user wrote as their answer, e.g. "jens" for a full name or
+            "lige her" for an address. Return null only when the message does
+            not try to answer the event at all.
+            A message often answers several events at once. Take each part
+            for its own event: for "jens, og jeg bor lige her og går på
+            gymnasiet" asked about the name, ExtractedValue is "jens", and
+            the address and education go into InferredReplies. A short or
+            vague part still counts as the answer: for "derhjemme, og jeg
+            læser til lærer" asked about the address, ExtractedValue is
+            "derhjemme".
             If the message also clearly answers some of the other open events,
             put those answers in InferredReplies, keyed by their event id.
             Never include the main event in InferredReplies, and never guess:

@@ -1062,6 +1062,188 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         Assert.Equal("Det svar passer ikke til spørgsmålet: Hvor gammel er du?", response.Message);
     }
 
+    // Som formularen i "SU faq": "hjælp" (ja) åbner navn → adresse →
+    // uddannelse med condition-pile; uddannelse gør "Tak!" pending, og
+    // fortryd (A12) lukker formularen og forsvinder, når den er udfyldt.
+    private sealed class FakeSuForm
+    {
+        private readonly Dictionary<string, string?> executed = new(StringComparer.OrdinalIgnoreCase);
+        private bool formOpen;
+
+        private bool Done(string id) => executed.ContainsKey(id);
+
+        public GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", Roles = "User", Sequence = 0, Included = true, IsEnabled = true, IsExecuted = Done("hjælp") ? true : null, ChoiceValues = "Ja (ja), Nej (nej)" },
+                Field("A8", "Hvad er dit fulde navn?", "text", 1, enabled: formOpen),
+                Field("A9", "Hvad er din adresse?", "text", 2, enabled: formOpen && Done("A8")),
+                Field("A17", "Hvilken uddannelse skal du i gang med?", "choice", 3, enabled: formOpen && Done("A9"), "Gymnasium (gym), Erhvervsuddannelse (eud)"),
+                new DcrEvent { Id = "A18", Label = "Tak! Vi har noteret dine oplysninger.", DataType = "label", Roles = "Chatbot", Sequence = 4, Included = formOpen, IsEnabled = formOpen, IsPending = Done("A17") && !Done("A18"), IsExecuted = Done("A18") ? true : null },
+                new DcrEvent { Id = "A12", Label = "jeg vil ikke ansøge alligevel", DataType = "choice", Roles = "User", Sequence = 5, Included = formOpen && !Done("A17"), IsEnabled = formOpen && !Done("A17"), IsExecuted = Done("A12") ? true : null, ChoiceValues = "Ja (ja), Nej (nej)" }
+            ]
+        };
+
+        public void Execute(string id, string? value)
+        {
+            executed[id] = value;
+            if (id == "hjælp" && value == "ja") formOpen = true;
+            if (id == "A12") formOpen = false;
+        }
+
+        private DcrEvent Field(string id, string label, string dataType, int sequence, bool enabled, string choiceValues = "") => new()
+        {
+            Id = id, Label = label, DataType = dataType, Roles = "User", Sequence = sequence, ChoiceValues = choiceValues,
+            Included = formOpen, IsEnabled = enabled, IsPending = formOpen && !Done(id),
+            IsExecuted = Done(id) ? true : null, Value = executed.GetValueOrDefault(id)
+        };
+    }
+
+    private async Task<(ChatSession Session, FakeSuForm Graph)> StartSuFormAsync()
+    {
+        var graph = new FakeSuForm();
+        var session = await StartSessionAsync(graph.State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => graph.State());
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, value, _) => graph.Execute(id, value))
+            .ReturnsAsync(true);
+
+        // Formularen åbnes med emne-knappen og bekræftes.
+        var open = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg vil gerne have hjælp til at søge SU" });
+        await service.ConfirmDraftAsync(session.SessionId, open.PendingDraft!.Id);
+        return (session, graph);
+    }
+
+    [Fact]
+    public async Task Form_InferredReplyForAFieldWaitingOnACondition_IsQueuedAndConfirmedInTurn()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A9"] = "Lige her 1" });
+
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "min adresse er lige her 1, og mit navn er Jens" });
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+
+        var address = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Equal("A9", address.PendingDraft!.EventId);
+        Assert.Equal("Lige her 1", address.PendingDraft.ProposedValue);
+
+        var next = await service.ConfirmDraftAsync(session.SessionId, address.PendingDraft.Id);
+        Assert.Equal("Hvilken uddannelse skal du i gang med?", next.Message);
+    }
+
+    [Fact]
+    public async Task Form_WhenOnlyInferredRepliesAreFound_AsksAgainForTheAskedQuestionAlone()
+    {
+        var (session, _) = await StartSuFormAsync();
+        // Første kald (med de andre spørgsmål) finder kun adressen; andet
+        // kald (kun det stillede spørgsmål) finder navnet.
+        llmService
+            .Setup(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.Is<IEnumerable<DcrEvent>>(o => o.Any()), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmValueResult { InferredReplies = new() { ["A9"] = "Lige her 1" } }, new TokenUsageResult()));
+        llmService
+            .Setup(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.Is<IEnumerable<DcrEvent>>(o => !o.Any()), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmValueResult { ExtractedValue = "Jens" }, new TokenUsageResult()));
+
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jens, jeg bor lige her 1" });
+
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+        Assert.Equal("Jens", name.PendingDraft.ProposedValue);
+        var address = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Equal("Lige her 1", address.PendingDraft!.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_AnswerForALaterField_IsParked_AndOfferedWhenTheFieldIsReady()
+    {
+        // "jens, jeg starter i gym snart": uddannelse venter på adressen.
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A17"] = "gym" });
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jens, jeg starter i gym snart" });
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+
+        // Efter navnet spørges der om adressen; uddannelsen er ikke glemt.
+        var askAddress = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Null(askAddress.PendingDraft);
+        Assert.Equal("Hvad er din adresse?", askAddress.Message);
+
+        SetupValueExtraction("her");
+        var address = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "her" });
+        var education = await service.ConfirmDraftAsync(session.SessionId, address.PendingDraft!.Id);
+
+        Assert.Equal("A17", education.PendingDraft!.EventId);
+        Assert.Equal("gym", education.PendingDraft.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_InferredReplyForABlockedField_IsNotShownBeforeTheAskedQuestion()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction(null, new() { ["A9"] = "Lige her 1" });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jeg bor lige her 1" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Jeg mangler stadig et svar på: Hvad er dit fulde navn?", response.Message);
+    }
+
+    [Fact]
+    public async Task Form_RejectingTheName_KeepsTheAddressParked_UntilANameIsGiven()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A9"] = "Lige her 1" });
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jens, lige her 1" });
+
+        // Adressen kan ikke vises, før et navn er bekræftet.
+        var response = await service.RejectDraftAsync(session.SessionId, name.PendingDraft!.Id);
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Okay, så spørger jeg igen: Hvad er dit fulde navn?", response.Message);
+
+        // Når det rigtige navn er bekræftet, kommer adressen frem igen.
+        SetupValueExtraction("Jensen");
+        var corrected = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jensen" });
+        var address = await service.ConfirmDraftAsync(session.SessionId, corrected.PendingDraft!.Id);
+
+        Assert.Equal("A9", address.PendingDraft!.EventId);
+        Assert.Equal("Lige her 1", address.PendingDraft.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_CancelTopicMidForm_IsMatchedAndStopsTheForm()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction(null);
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(("A12", new TokenUsageResult()));
+
+        var cancel = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "afslut det her tak" });
+        Assert.Equal("A12", cancel.PendingDraft!.EventId);
+        Assert.True(cancel.PendingDraft.IsEventMatch);
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, cancel.PendingDraft.Id);
+
+        Assert.Equal("Okay, så stopper vi der.", response.Message);
+    }
+
+    [Fact]
+    public async Task Form_ChoosingTheFormAgainAfterFillingIt_PointsToThePencil()
+    {
+        var (session, _) = await StartSuFormAsync();
+        await AnswerAsync(session, "Jens");
+        await AnswerAsync(session, "Lige her 1");
+        var done = await AnswerAsync(session, "gym");
+        Assert.Equal("Tak! Vi har noteret dine oplysninger.", done.Message);
+
+        var again = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg vil gerne have hjælp til at søge SU" });
+        var response = await service.ConfirmDraftAsync(session.SessionId, again.PendingDraft!.Id);
+
+        Assert.Equal("Det har du allerede været igennem. Du kan rette dine svar med blyanten ✎ ved dem.", response.Message);
+    }
+
     // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.
     private async Task<ChatResponse> AnswerAsync(ChatSession session, string value)
     {
