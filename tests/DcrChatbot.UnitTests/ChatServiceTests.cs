@@ -519,6 +519,52 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task FaqQuestionWithoutAnswer_SaysSo_AndDoesNotRepeatEarlierAnswersOrTouchTheAnchor()
+    {
+        // Som "SU faq": minSU har et svar-label; førstegang peger kun på et
+        // andet spørgsmål; ankeret er pending og har fået en værdi i grafen.
+        var executed = new HashSet<string>();
+        var pending = new HashSet<string> { "Velkommen" };
+        GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "Velkommen", Label = "Velkommen til chatbotten", DataType = "label", Included = true, IsEnabled = true, IsPending = pending.Contains("Velkommen"), IsExecuted = executed.Contains("Velkommen") ? true : null, Value = "Jeg er en chatboit" },
+                new DcrEvent { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", Included = true, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)", IsExecuted = executed.Contains("minSU") ? true : null },
+                new DcrEvent { Id = "førstegang", Label = "Det er første gang jeg søger SU - hvad gør jeg?", DataType = "choice", Included = true, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)", IsExecuted = executed.Contains("førstegang") ? true : null },
+                new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", Included = true, IsEnabled = true, IsPending = pending.Contains("A2Copy"), IsExecuted = executed.Contains("A2Copy") ? true : null }
+            ]
+        };
+        var session = await StartSessionAsync(State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(State);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) =>
+            {
+                executed.Add(id);
+                pending.Remove(id);
+                if (id == "minSU") pending.Add("A2Copy");
+            })
+            .ReturnsAsync(true);
+
+        SetupLlmMatch("minSU", null);
+        var minSuDraft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad er minsu?" });
+        var minSu = await service.ConfirmDraftAsync(session.SessionId, minSuDraft.PendingDraft!.Id);
+        Assert.Equal("På minSU kan du følge med i din SU.", minSu.Message);
+
+        SetupLlmMatch("førstegang", null);
+        var firstTimeDraft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "første gang?" });
+        var firstTime = await service.ConfirmDraftAsync(session.SessionId, firstTimeDraft.PendingDraft!.Id);
+
+        Assert.Equal("Jeg har desværre ikke et svar på det spørgsmål endnu.", firstTime.Message);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "Velkommen", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task ConfirmDraft_ConclusionLeavesOutResultThatCouldNotBeExecuted()
     {
         // FR-DCR-5: fejler udførslen af resultatet, må det ikke stå i
