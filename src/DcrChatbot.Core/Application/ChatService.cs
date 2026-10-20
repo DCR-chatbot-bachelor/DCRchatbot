@@ -222,11 +222,19 @@ public sealed class ChatService(
         if (!confirm)
         {
             session.PendingAnswersQueue.Remove(draft);
+            await RefreshStateAsync(session, cancellationToken);
+
+            // Et afvist svar i et formularforløb: stil det spørgsmål igen,
+            // botten stadig mangler svar på, frem for at bede om en ny formulering.
+            var openQuestion = GetNextAnswerablePendingEvent(session.CurrentGraphState);
             var rejected = session.PendingAnswersQueue.Count > 0
                 ? "Okay, det svar springer jeg over."
-                : "Okay. Prøv at omformulere dit spørgsmål.";
+                : draft.PreviousValue is not null
+                    ? $"Okay, dit svar på '{draft.Question}' er stadig '{draft.PreviousValue}'."
+                    : !draft.IsEventMatch && openQuestion is not null
+                        ? $"Okay, så spørger jeg igen: {openQuestion.Label}"
+                        : "Okay. Prøv at omformulere dit spørgsmål.";
             session.History.Add(new ChatMessage { Sender = "Bot", Content = rejected });
-            await RefreshStateAsync(session, cancellationToken);
             return ToResponse(session, rejected);
         }
 
@@ -648,8 +656,16 @@ public sealed class ChatService(
         GetAnswerablePendingEvents(state).FirstOrDefault();
 
     private static IEnumerable<DcrEvent> GetAnswerablePendingEvents(GraphState? state) =>
-        state?.GetPendingEvents().Where(e =>
-            !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)) ?? [];
+        state?.GetPendingEvents().Where(IsCitizenQuestion) ?? [];
+
+    // Et spørgsmål, borgeren kan svare på: det har en datatype (en værdi at
+    // udfylde) og er ikke et label eller et event, DCR udfører selv (rollen
+    // Robot, fx en DMN-beslutning). Et event uden datatype ville acceptere
+    // hvad som helst som svar, så botten aldrig kom videre.
+    private static bool IsCitizenQuestion(DcrEvent dcrEvent) =>
+        !string.IsNullOrWhiteSpace(dcrEvent.DataType) &&
+        !string.Equals(dcrEvent.DataType, "label", StringComparison.OrdinalIgnoreCase) &&
+        dcrEvent.Roles?.Contains("Robot", StringComparison.OrdinalIgnoreCase) != true;
 
     // I FAQ-graferne er label-eventets label selve svarteksten. Description
     // er DCR's dokumentationsfelt og kan indeholde interne noter.
@@ -672,11 +688,12 @@ public sealed class ChatService(
         _ => "Jeg kunne ikke finde et spørgsmål der matcher det. Prøv at omformulere."
     };
 
-    // Label-events er informationsbeskeder, ikke svarbare kandidater.
+    // Kun spørgsmål, borgeren kan svare på, er kandidater. Udførte
+    // choice-events (FAQ) forbliver kandidater, så de kan stilles igen.
     private static List<DcrEvent> GetCandidateEvents(GraphState? state) =>
         state?.EnabledEvents
             .Where(e =>
-                !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase) &&
+                IsCitizenQuestion(e) &&
                 (string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase) ||
                  e.IsExecuted != true))
             .ToList() ?? [];

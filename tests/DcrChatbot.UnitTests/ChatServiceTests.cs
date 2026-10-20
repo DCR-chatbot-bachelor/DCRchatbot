@@ -851,6 +851,79 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task EventWithoutDataType_IsNeverAskedOrMatched_SoTheBotDoesNotGetStuck()
+    {
+        // Som "nyt faq" → "fakta om faq" i SU-grafen: faq har ingen datatype,
+        // så den er hverken et svar (label) eller et spørgsmål med en værdi.
+        var faqPending = false;
+        GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "nyt", Label = "nyt faq", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                new DcrEvent { Id = "faq", Label = "fakta om faq", DataType = "", IsEnabled = true, IsPending = faqPending }
+            ]
+        };
+        var session = await StartSessionAsync(State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(State);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "nyt", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => faqPending = true)
+            .ReturnsAsync(true);
+
+        IEnumerable<DcrEvent>? offeredCandidates = null;
+        SetupLlmMatch("nyt", null);
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IEnumerable<DcrEvent>, LlmOptions, CancellationToken>((_, candidates, _, _) => offeredCandidates = candidates)
+            .ReturnsAsync(("nyt", new TokenUsageResult()));
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "nyt faq" });
+        var confirmed = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Jeg har desværre ikke et svar på det spørgsmål endnu.", confirmed.Message);
+        Assert.DoesNotContain(offeredCandidates!, e => e.Id == "faq");
+
+        // Næste besked bliver ikke tolket som et svar på "fakta om faq".
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(((string?)null, new TokenUsageResult()));
+        var next = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad kan du hjælpe med" });
+
+        Assert.Null(next.PendingDraft);
+        Assert.DoesNotContain("fakta om faq", next.Message);
+        llmService.Verify(
+            s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RejectingAFormAnswer_AsksTheQuestionAgain()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "18" });
+
+        var response = await service.RejectDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Okay, så spørger jeg igen: Hvor gammel er du?", response.Message);
+    }
+
+    [Fact]
+    public async Task RejectingAnEdit_KeepsTheEarlierAnswer()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        SetupValueExtraction("24");
+        var revision = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "24" });
+
+        var response = await service.RejectDraftAsync(session.SessionId, revision.PendingDraft!.Id);
+
+        Assert.Equal("Okay, dit svar på 'Hvor gammel er du?' er stadig '18'.", response.Message);
+    }
+
+    [Fact]
     public async Task Start_FaqGraph_GreetsWithTheGraphsTopics()
     {
         dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("sim-1");
