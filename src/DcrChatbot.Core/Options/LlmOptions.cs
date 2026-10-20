@@ -4,6 +4,12 @@ public sealed class LlmOptions
 {
     public const string SectionName = "Llm";
 
+    public string ActiveModelId => Provider switch
+    {
+        LlmProvider.OpenAi => OpenAi.ModelId,
+        _ => ModelId
+    };
+
     public LlmProvider Provider { get; set; } = LlmProvider.Gemini;
 
     // ApiKey og ModelId gælder Gemini; OpenAI har sine egne under Llm:OpenAi.
