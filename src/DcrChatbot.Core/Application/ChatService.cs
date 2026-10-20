@@ -285,10 +285,18 @@ public sealed class ChatService(
             replyParts.Add(nextPendingEvent.Label);
         }
 
-        // Forløbet er slut, når der hverken er kladder, spørgsmål eller svar
+        // Et FAQ-spørgsmål, der ikke gør et svar pending, er ikke slutningen
+        // på et forløb; det mangler bare et svar i grafen.
+        var hasNoFaqAnswer = draft.IsEventMatch && !hasQueuedDrafts && replyParts.Count == 0;
+        if (hasNoFaqAnswer)
+        {
+            replyParts.Add("Jeg har desværre ikke et svar på det spørgsmål endnu.");
+        }
+
+        // En formular er slut, når der hverken er kladder, spørgsmål eller svar
         // tilbage. Grafens resultat-labels (fx et DMN-svar) udføres så først,
         // så konklusionen kun bygger på udførte events (FR-DCR-5).
-        var isFinished = !hasQueuedDrafts && nextPendingEvent is null && replyParts.Count == 0;
+        var isFinished = !draft.IsEventMatch && !hasQueuedDrafts && nextPendingEvent is null && replyParts.Count == 0;
         var resultLabels = isFinished ? FindResultLabels(session.CurrentGraphState) : [];
 
         // Svarene udføres, så samme spørgsmål kan stilles igen og svaret
@@ -608,11 +616,13 @@ public sealed class ChatService(
 
     // Labels som DCR har beregnet en værdi til (fx et DMN-resultat), men som
     // endnu ikke er udført. De udføres ved forløbets afslutning, så de
-    // kommer med i konklusionen.
+    // kommer med i konklusionen. Pending labels er ikke resultater: det
+    // permanente anker er pending og må aldrig udføres (FR-DCR-4).
     private static List<DcrEvent> FindResultLabels(GraphState? state) =>
         state?.EnabledEvents
             .Where(e => string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)
                      && e.IsExecuted != true
+                     && !e.IsPending
                      && (!string.IsNullOrWhiteSpace(e.Value) || !string.IsNullOrWhiteSpace(e.DisplayValue)))
             .ToList() ?? [];
 

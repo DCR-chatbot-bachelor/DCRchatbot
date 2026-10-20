@@ -108,14 +108,16 @@ public sealed class ConclusionBuilderTests
     }
 
     [Fact]
-    public void Build_ExecutedLabelWithoutValue_UsesItsLabelText()
+    public void Build_ExecutedFaqAnswerWithoutValue_IsNotRepeated()
     {
+        // Et FAQ-svar står i labelens tekst og er allerede vist i chatten;
+        // det er ikke et resultat, DCR har beregnet.
         var state = new GraphState
         {
             Events = [new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", Included = true, IsExecuted = true }]
         };
 
-        Assert.Equal(["På minSU kan du følge med i din SU."], ConclusionBuilder.Build(state).Results);
+        Assert.Empty(ConclusionBuilder.Build(state).Results);
     }
 
     [Fact]
