@@ -30,11 +30,12 @@ public static class ConclusionBuilder
     {
         var executed = state?.ExecutedEvents.OrderBy(e => e.Sequence).ToList() ?? [];
 
-        // Udførte labels er resultater og svar, botten har vist; teksten er
-        // grafens beregnede værdi, hvis den har én, ellers selve labelen.
+        // Resultater er udførte labels med en værdi, DCR har beregnet (fx et
+        // DMN-svar). Udførte labels uden værdi er FAQ-svar, botten allerede
+        // har vist undervejs; de gentages ikke i konklusionen.
         var results = executed
             .Where(IsLabel)
-            .Select(e => FirstNonEmpty(e.DisplayValue, e.Value, e.Label))
+            .Select(e => FirstNonEmpty(e.DisplayValue, e.Value))
             .OfType<string>()
             .ToList();
 
