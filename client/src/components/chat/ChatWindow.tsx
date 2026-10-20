@@ -3,7 +3,7 @@ import type {
   AnsweredQuestion,
   ChatMessage,
   PendingAnswer,
-  Suggestion,
+  QuickReply,
 } from "../../types/chat";
 import { DraftConfirmation } from "./DraftConfirmation";
 import { Message } from "./Message";
@@ -16,7 +16,7 @@ interface ChatWindowProps {
   onConfirmDraft: () => void;
   onRejectDraft: () => void;
   onEditAnswer: (answer: AnsweredQuestion) => void;
-  onSelectSuggestion: (suggestion: Suggestion) => void;
+  onSelectQuickReply: (reply: QuickReply) => void;
 }
 
 export function ChatWindow({
@@ -27,14 +27,14 @@ export function ChatWindow({
   onConfirmDraft,
   onRejectDraft,
   onEditAnswer,
-  onSelectSuggestion,
+  onSelectQuickReply,
 }: ChatWindowProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Forslag kan kun vælges fra den seneste besked, og ikke mens en kladde
+  // Knapperne kan kun vælges fra den seneste besked, og ikke mens en kladde
   // eller en rettelse er åben, hvor et klik ellers ville blive et svar på den.
   const lastMessageId = messages.at(-1)?.id;
-  const canSelectSuggestions = pendingDraft === null && editingEventId === null;
+  const canSelectQuickReplies = pendingDraft === null && editingEventId === null;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -65,12 +65,12 @@ export function ChatWindow({
               editingEventId={editingEventId}
               disabled={disabled}
               onEditAnswer={onEditAnswer}
-              suggestions={
-                canSelectSuggestions && message.id === lastMessageId
-                  ? message.suggestions
+              quickReplies={
+                canSelectQuickReplies && message.id === lastMessageId
+                  ? message.quickReplies
                   : undefined
               }
-              onSelectSuggestion={onSelectSuggestion}
+              onSelectQuickReply={onSelectQuickReply}
             />
           ))}
           {pendingDraft && (

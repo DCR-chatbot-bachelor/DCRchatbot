@@ -899,6 +899,35 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task ChoiceQuestion_ComesWithTheGraphsValuesAsAnswerOptions()
+    {
+        var (session, _) = await StartFormSessionAsync();
+
+        // Første spørgsmål er et tal-spørgsmål: ingen knapper.
+        SetupValueExtraction("18");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "18" });
+        Assert.Empty(draft.AnswerOptions);
+
+        // Næste spørgsmål er et choice-spørgsmål: grafens værdier som knapper.
+        var next = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Hvilket land bor du i?", next.Message);
+        Assert.Equal(["Denmark", "Sweden"], next.AnswerOptions.Select(o => o.Value));
+    }
+
+    [Fact]
+    public async Task AnswerOptions_AreNotShown_WhileADraftIsOpen()
+    {
+        var (session, _) = await StartFormSessionAsync(alreadyExecuted: "Age");
+        SetupValueExtraction("Denmark");
+
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Danmark" });
+
+        Assert.NotNull(draft.PendingDraft);
+        Assert.Empty(draft.AnswerOptions);
+    }
+
+    [Fact]
     public async Task RejectingAFormAnswer_AsksTheQuestionAgain()
     {
         var (session, _) = await StartFormSessionAsync();

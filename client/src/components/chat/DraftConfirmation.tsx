@@ -21,7 +21,7 @@ export function DraftConfirmation({
           {draft.isEventMatch ? (
             <>
               <span className="draft-card__label">
-                Jeg forstod, at din besked handler om
+                Jeg forstod, at din besked handler om 
               </span>
               <strong>{draft.question}</strong>
             </>

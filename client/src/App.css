@@ -723,14 +723,14 @@
   color: #83918b;
   font-size: 10px;
 }
-/* Emner fra grafen, når botten ikke forstod beskeden (FR-LLM-3). */
-.message__suggestions {
+/* Hurtige svar: grafens emner (FR-LLM-3) og svar på choice-spørgsmål. */
+.message__quick-replies {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }
-.suggestion-chip {
+.quick-reply {
   padding: 6px 10px;
   color: #237f67;
   font: inherit;
@@ -742,11 +742,11 @@
   border: 1px solid #cfe3d8;
   border-radius: 14px;
 }
-.suggestion-chip:hover:not(:disabled) {
+.quick-reply:hover:not(:disabled) {
   background: #f1f7f3;
   border-color: #237f67;
 }
-.suggestion-chip:disabled {
+.quick-reply:disabled {
   cursor: default;
   opacity: 0.5;
 }

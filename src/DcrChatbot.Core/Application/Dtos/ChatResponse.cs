@@ -26,6 +26,12 @@ public class ChatResponse
     /// matchede et event (FR-LLM-3). Tom i alle andre svar.
     /// </summary>
     public List<Suggestion> Suggestions { get; set; } = new();
+
+    /// <summary>
+    /// De gyldige svar på det choice-spørgsmål, botten venter på svar på
+    /// (fx ja/nej). Tom, når der ikke er et åbent choice-spørgsmål.
+    /// </summary>
+    public List<AnswerOption> AnswerOptions { get; set; } = new();
     public List<DcrEvent> AvailableEvents { get; set; } = new();
     public List<DcrEvent> ExecutedEvents { get; set; } = new();
     public bool IsEnded { get; set; }

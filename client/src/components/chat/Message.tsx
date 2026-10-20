@@ -1,4 +1,4 @@
-import type { AnsweredQuestion, MessageAnswer, Suggestion } from "../../types/chat";
+import type { AnsweredQuestion, MessageAnswer, QuickReply } from "../../types/chat";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -8,9 +8,9 @@ interface MessageProps {
   editingEventId?: string | null;
   disabled?: boolean;
   onEditAnswer?: (answer: AnsweredQuestion) => void;
-  /** Kun sat på den seneste bot-besked, så gamle forslag ikke kan vælges. */
-  suggestions?: Suggestion[];
-  onSelectSuggestion?: (suggestion: Suggestion) => void;
+  /** Kun sat på den seneste bot-besked, så gamle knapper ikke kan vælges. */
+  quickReplies?: QuickReply[];
+  onSelectQuickReply?: (reply: QuickReply) => void;
 }
 
 export function Message({
@@ -21,8 +21,8 @@ export function Message({
   editingEventId = null,
   disabled = false,
   onEditAnswer,
-  suggestions = [],
-  onSelectSuggestion,
+  quickReplies = [],
+  onSelectQuickReply,
 }: MessageProps) {
   const editable = answers.filter((a) => !a.isSuperseded);
   const isSuperseded = answers.length > 0 && editable.length === 0;
@@ -62,18 +62,19 @@ export function Message({
             ))}
           <p>{content}</p>
         </div>
-        {onSelectSuggestion && suggestions.length > 0 && (
-          // FR-LLM-3: grafens emner som knapper; et klik sendes som besked.
-          <div className="message__suggestions">
-            {suggestions.map((suggestion) => (
+        {onSelectQuickReply && quickReplies.length > 0 && (
+          // Grafens emner (FR-LLM-3) eller svar på et choice-spørgsmål;
+          // et klik sendes som borgerens besked.
+          <div className="message__quick-replies">
+            {quickReplies.map((reply) => (
               <button
-                key={suggestion.eventId}
+                key={reply.key}
                 type="button"
-                className="suggestion-chip"
+                className="quick-reply"
                 disabled={disabled}
-                onClick={() => onSelectSuggestion(suggestion)}
+                onClick={() => onSelectQuickReply(reply)}
               >
-                {suggestion.label}
+                {reply.label}
               </button>
             ))}
           </div>

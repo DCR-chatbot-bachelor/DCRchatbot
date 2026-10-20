@@ -768,6 +768,24 @@ public sealed class ChatService(
             .Select(e => new Suggestion { EventId = e.Id, Label = e.Label })
             .ToList() ?? [];
 
+    // Venter botten på svar på et choice-spørgsmål, er grafens gyldige værdier
+    // svar-knapper. Ikke mens en kladde er åben: der svares med Ja/Nej til den.
+    private static List<AnswerOption> GetAnswerOptions(ChatSession session)
+    {
+        if (session.PendingAnswersQueue.Count > 0)
+        {
+            return [];
+        }
+
+        var question = GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        return question is null ||
+               !string.Equals(question.DataType, "choice", StringComparison.OrdinalIgnoreCase)
+            ? []
+            : EventValidator.GetChoiceOptions(question)
+                .Select(option => new AnswerOption { Label = option.Label, Value = option.Value })
+                .ToList();
+    }
+
     private static ChatResponse ToResponse(
         ChatSession session,
         string message,
@@ -780,6 +798,7 @@ public sealed class ChatService(
         PendingDraft = session.PendingAnswersQueue.FirstOrDefault(),
         ConfirmedAnswer = confirmedAnswer,
         Suggestions = suggestions ?? [],
+        AnswerOptions = GetAnswerOptions(session),
         AvailableEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? [],
         ExecutedEvents = session.CurrentGraphState?.ExecutedEvents.ToList() ?? [],
         IsEnded = session.CurrentGraphState?.IsAccepting ?? false
