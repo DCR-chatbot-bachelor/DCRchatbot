@@ -879,7 +879,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
             .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
             .Callback<string, IEnumerable<DcrEvent>, LlmOptions, CancellationToken>((_, candidates, _, _) => offeredCandidates = candidates)
             .ReturnsAsync(("nyt", new TokenUsageResult()));
-        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "nyt faq" });
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "fortæl om det nye" });
         var confirmed = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
 
         Assert.Equal("Jeg har desværre ikke et svar på det spørgsmål endnu.", confirmed.Message);
@@ -925,6 +925,67 @@ public async Task RejectDraft_DoesNotExecuteEvent()
 
         Assert.NotNull(draft.PendingDraft);
         Assert.Empty(draft.AnswerOptions);
+    }
+
+    [Fact]
+    public async Task FormChoiceField_IsNeitherATopicNorReExecuted_AfterTheFormIsDone()
+    {
+        // Efter formularen: "uddannelse" er et udført choice-felt uden ja-valg.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events =
+            [
+                new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", IsEnabled = true, IsExecuted = true, ChoiceValues = "Ja (ja), Nej (nej)" },
+                new DcrEvent { Id = "A17", Label = "uddannelse", DataType = "choice", IsEnabled = true, IsExecuted = true, Value = "eud", ChoiceValues = "Gymnasium (gym), Erhvervsuddannelse (eud)" }
+            ]
+        });
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(("A17", new TokenUsageResult()));
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "uddannelse" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal(["hjælp"], response.Suggestions.Select(s => s.EventId));
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "A17", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task TopicButton_MatchesTheEventDirectly_WithoutAskingTheLlm()
+    {
+        // Emnet indeholder "hjælp", som LLM'en kan tolke som et generelt
+        // spørgsmål; et tryk på knappen sender præcis emnets tekst.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events = [new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", IsEnabled = true, ChoiceValues = "Ja (ja), Nej (nej)" }]
+        });
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(((string?)null, new TokenUsageResult()));
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jeg vil gerne have hjælp til at søge SU " });
+
+        Assert.Equal("hjælp", response.PendingDraft!.EventId);
+        llmService.Verify(
+            s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AnswerButton_UsesTheChoiceValueDirectly_WithoutAskingTheLlm()
+    {
+        var (session, _) = await StartFormSessionAsync(alreadyExecuted: "Age");
+        llmService.Invocations.Clear();
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Denmark" });
+
+        Assert.Equal("Country", response.PendingDraft!.EventId);
+        Assert.Equal("Denmark", response.PendingDraft.ProposedValue);
+        llmService.Verify(
+            s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]

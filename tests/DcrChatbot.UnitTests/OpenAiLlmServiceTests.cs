@@ -75,6 +75,8 @@ public sealed class OpenAiLlmServiceTests
         var userPrompt = body.RootElement.GetProperty("messages")[1].GetProperty("content").GetString();
         Assert.Contains("Other open events", userPrompt);
         Assert.Contains("\"id\":\"Country\"", userPrompt);
+        // Teksten til hvert valg sendes med, så "danmark" kan kobles til "Denmark".
+        Assert.Contains("\"choices\":[{\"label\":\"Denmark\",\"value\":\"Denmark\"}", userPrompt);
     }
 
     [Fact]

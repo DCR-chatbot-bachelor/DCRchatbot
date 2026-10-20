@@ -83,9 +83,11 @@ internal static class LlmIntentPrompt
 
             Identify which available event the user is talking about.
             Do not extract or infer any value from the message.
-            Return null when the message is not clearly about one specific
-            event, for example a greeting, a general question such as
-            "what can you help me with?", or a topic none of the events cover.
+            A message that names, quotes or rephrases an event's topic matches
+            that event, even if it contains words such as "help" or "hjælp".
+            Return null only when the message is not about any of the events,
+            for example a greeting, a general question such as "what can you
+            help me with?", or a topic none of the events cover.
             Return only JSON with exactly one field:
             MatchedEventId (string or null).
             """;
@@ -115,6 +117,9 @@ internal static class LlmIntentPrompt
             Never include the main event in InferredReplies, and never guess:
             leave InferredReplies empty when nothing else is clearly answered.
             For choice events, every value must be one of their allowedValues.
+            Use the choices' labels to understand the user: pick the value whose
+            label best matches what they wrote, even if it is shortened or
+            misspelled (for example "erhverv" for the label "Erhvervsuddannelse").
             Return only JSON with exactly these fields:
             ExtractedValue (string or null), Explanation (short string),
             InferredReplies (object mapping event IDs to string values).
@@ -136,12 +141,16 @@ internal static class LlmIntentPrompt
         return result;
     }
 
+    // allowedValues er det, der må svares; choices giver teksten til hver
+    // værdi, så modellen kan koble "erhverv" til værdien for "Erhvervsuddannelse".
     private static object DescribeEvent(DcrEvent dcrEvent) => new
     {
         id = dcrEvent.Id,
         label = dcrEvent.Label,
         dataType = dcrEvent.DataType,
-        allowedValues = EventValidator.GetChoiceValues(dcrEvent)
+        allowedValues = EventValidator.GetChoiceValues(dcrEvent),
+        choices = EventValidator.GetChoiceOptions(dcrEvent)
+            .Select(option => new { label = option.Label, value = option.Value })
     };
 
     // Afgør om borgerens fritekst bekræfter eller afviser kladden.
