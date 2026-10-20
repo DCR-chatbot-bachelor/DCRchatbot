@@ -33,10 +33,19 @@ public sealed class ChatService(
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
+
+        // En formular starter med sit første spørgsmål; en FAQ-graf har intet
+        // spørgsmål at stille, så den viser i stedet de emner, den dækker.
         var pendingEvent = GetNextAnswerablePendingEvent(state);
-        return ToResponse(
-            session,
-            pendingEvent is null ? "Samtalen er startet." : pendingEvent.Label);
+        if (pendingEvent is not null)
+        {
+            return ToResponse(session, pendingEvent.Label);
+        }
+
+        var suggestions = GetHelpSuggestions(state);
+        return suggestions.Count == 0
+            ? ToResponse(session, "Samtalen er startet.")
+            : ToResponse(session, "Hej! Hvad vil du vide noget om?", suggestions: suggestions);
     }
 
     public async Task<ChatResponse> SendMessageAsync(
@@ -463,16 +472,15 @@ public sealed class ChatService(
                 candidates,
                 llmOptions,
                 cancellationToken);
-            if (string.IsNullOrWhiteSpace(matchedEventId))
-            {
-                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
-            }
-
-            matchedEvent = candidates.FirstOrDefault(e =>
-                string.Equals(e.Id, matchedEventId, StringComparison.OrdinalIgnoreCase));
+            matchedEvent = string.IsNullOrWhiteSpace(matchedEventId)
+                ? null
+                : candidates.FirstOrDefault(e =>
+                    string.Equals(e.Id, matchedEventId, StringComparison.OrdinalIgnoreCase));
             if (matchedEvent is null)
             {
-                return ToResponse(session, "Jeg kunne ikke finde et spørgsmål der matcher det.");
+                // Fx "hvad kan jeg få hjælp til?" eller noget, grafen ikke
+                // dækker: vis grafens emner i stedet for blot at afvise.
+                return HelpResponse(session);
             }
 
             // En event-match beskæftiger sig kun med spørgsmålet. For choice-
@@ -488,7 +496,9 @@ public sealed class ChatService(
         {
             if (inferredDrafts.Count == 0)
             {
-                return ToResponse(session, "Jeg kunne ikke udtrække en værdi fra dit svar. Prøv venligst igen.");
+                // Botten har stillet et spørgsmål; den bedste hjælp er at
+                // minde om det i stedet for blot at bede om en omformulering.
+                return ToResponse(session, $"Jeg mangler stadig et svar på: {matchedEvent.Label}");
             }
         }
         else
@@ -508,7 +518,11 @@ public sealed class ChatService(
             }
             else if (inferredDrafts.Count == 0)
             {
-                return ToResponse(session, ToCitizenMessage(validation.Error));
+                return ToResponse(
+                    session,
+                    isEventMatch
+                        ? ToCitizenMessage(validation.Error)
+                        : $"Det svar passer ikke til spørgsmålet: {matchedEvent.Label}");
             }
         }
 
@@ -701,14 +715,44 @@ public sealed class ChatService(
             string.IsNullOrWhiteSpace(pendingAnswerId) || draft.Id == pendingAnswerId)
         ?? throw new KeyNotFoundException("Den ønskede kladde blev ikke fundet.");
 
+    // FR-LLM-3: hjælpen kommer fra grafen, ikke fra LLM'en. Borgeren får de
+    // emner, grafen tilbyder lige nu, og intet udføres i DCR.
+    private static ChatResponse HelpResponse(ChatSession session)
+    {
+        var suggestions = GetHelpSuggestions(session.CurrentGraphState);
+        return suggestions.Count == 0
+            ? ToResponse(session, "Det kan jeg desværre ikke hjælpe med. Prøv at omformulere dit spørgsmål.")
+            : ToResponse(
+                session,
+                "Det kan jeg desværre ikke svare på, men jeg kan hjælpe dig med disse emner:",
+                suggestions: suggestions);
+    }
+
+    private const int MaxSuggestions = 8;
+
+    // Emnerne er grafens enabled choice-events (FAQ-spørgsmålene). Labels er
+    // svar og formularspørgsmål stilles af botten selv, så de foreslås ikke.
+    private static List<Suggestion> GetHelpSuggestions(GraphState? state) =>
+        state?.EnabledEvents
+            .Where(e => string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(e.Label))
+            .OrderBy(e => e.Sequence)
+            .Take(MaxSuggestions)
+            .Select(e => new Suggestion { EventId = e.Id, Label = e.Label })
+            .ToList() ?? [];
+
     private static ChatResponse ToResponse(
-        ChatSession session, string message, AnsweredQuestion? confirmedAnswer = null) => new()
+        ChatSession session,
+        string message,
+        AnsweredQuestion? confirmedAnswer = null,
+        List<Suggestion>? suggestions = null) => new()
     {
         SessionId = session.SessionId,
         Message = message,
         Mode = session.Mode,
         PendingDraft = session.PendingAnswersQueue.FirstOrDefault(),
         ConfirmedAnswer = confirmedAnswer,
+        Suggestions = suggestions ?? [],
         AvailableEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? [],
         ExecutedEvents = session.CurrentGraphState?.ExecutedEvents.ToList() ?? [],
         IsEnded = session.CurrentGraphState?.IsAccepting ?? false

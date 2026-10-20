@@ -20,6 +20,12 @@ public class ChatResponse
     /// Svaret, der blev udført i denne forespørgsel, så det kan rettes senere (FR-HITL-2).
     /// </summary>
     public AnsweredQuestion? ConfirmedAnswer { get; set; }
+
+    /// <summary>
+    /// Emner fra grafen, som borgeren kan vælge imellem, når beskeden ikke
+    /// matchede et event (FR-LLM-3). Tom i alle andre svar.
+    /// </summary>
+    public List<Suggestion> Suggestions { get; set; } = new();
     public List<DcrEvent> AvailableEvents { get; set; } = new();
     public List<DcrEvent> ExecutedEvents { get; set; } = new();
     public bool IsEnded { get; set; }

@@ -65,6 +65,7 @@ export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
                 onConfirmDraft={chat.confirmDraft}
                 onRejectDraft={chat.rejectDraft}
                 onEditAnswer={chat.startEditing}
+                onSelectSuggestion={chat.selectSuggestion}
               />
               {chat.editingAnswer && (
                 <EditAnswerBanner

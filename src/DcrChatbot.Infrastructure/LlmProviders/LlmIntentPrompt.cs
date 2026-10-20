@@ -83,6 +83,9 @@ internal static class LlmIntentPrompt
 
             Identify which available event the user is talking about.
             Do not extract or infer any value from the message.
+            Return null when the message is not clearly about one specific
+            event, for example a greeting, a general question such as
+            "what can you help me with?", or a topic none of the events cover.
             Return only JSON with exactly one field:
             MatchedEventId (string or null).
             """;

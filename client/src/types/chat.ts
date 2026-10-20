@@ -36,6 +36,13 @@ export interface ChatMessage {
   timestamp: string
   /** De bekræftede svar, beskeden gav; hvert kan rettes (FR-HITL-2). */
   answers?: MessageAnswer[]
+  /** Emner fra grafen, botten foreslår, når den ikke forstod beskeden. */
+  suggestions?: Suggestion[]
+}
+
+export interface Suggestion {
+  eventId: string
+  label: string
 }
 
 export interface MessageAnswer {
@@ -73,6 +80,7 @@ export interface ChatResponse {
   pendingDraft?: PendingAnswer | null
   requiresConfirmation: boolean
   confirmedAnswer?: AnsweredQuestion | null
+  suggestions?: Suggestion[]
   availableEvents: DcrEvent[]
   executedEvents: DcrEvent[]
   isEnded: boolean

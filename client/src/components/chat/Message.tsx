@@ -1,4 +1,4 @@
-import type { AnsweredQuestion, MessageAnswer } from "../../types/chat";
+import type { AnsweredQuestion, MessageAnswer, Suggestion } from "../../types/chat";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -8,6 +8,9 @@ interface MessageProps {
   editingEventId?: string | null;
   disabled?: boolean;
   onEditAnswer?: (answer: AnsweredQuestion) => void;
+  /** Kun sat på den seneste bot-besked, så gamle forslag ikke kan vælges. */
+  suggestions?: Suggestion[];
+  onSelectSuggestion?: (suggestion: Suggestion) => void;
 }
 
 export function Message({
@@ -18,6 +21,8 @@ export function Message({
   editingEventId = null,
   disabled = false,
   onEditAnswer,
+  suggestions = [],
+  onSelectSuggestion,
 }: MessageProps) {
   const editable = answers.filter((a) => !a.isSuperseded);
   const isSuperseded = answers.length > 0 && editable.length === 0;
@@ -57,6 +62,22 @@ export function Message({
             ))}
           <p>{content}</p>
         </div>
+        {onSelectSuggestion && suggestions.length > 0 && (
+          // FR-LLM-3: grafens emner som knapper; et klik sendes som besked.
+          <div className="message__suggestions">
+            {suggestions.map((suggestion) => (
+              <button
+                key={suggestion.eventId}
+                type="button"
+                className="suggestion-chip"
+                disabled={disabled}
+                onClick={() => onSelectSuggestion(suggestion)}
+              >
+                {suggestion.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </article>
   );

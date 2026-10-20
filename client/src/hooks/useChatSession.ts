@@ -12,6 +12,7 @@ import type {
   ChatResponse,
   ExecutionMode,
   PendingAnswer,
+  Suggestion,
 } from "../types/chat";
 
 function createMessage(
@@ -69,9 +70,16 @@ export function useChatSession() {
   // Beskeden, kladderne i køen kom fra; bekræftede svar knyttes til den.
   const draftSourceMessageId = useRef<string | null>(null);
 
-  function addMessage(sender: ChatMessage["sender"], content: string) {
+  function addMessage(
+    sender: ChatMessage["sender"],
+    content: string,
+    suggestions?: Suggestion[],
+  ) {
     if (!content.trim()) return null;
-    const message = createMessage(sender, content);
+    const message = {
+      ...createMessage(sender, content),
+      suggestions: suggestions?.length ? suggestions : undefined,
+    };
     setMessages((current) => [...current, message]);
     return message.id;
   }
@@ -91,7 +99,7 @@ export function useChatSession() {
       );
     }
     if (!response.pendingDraft || answersOpenDraft) {
-      addMessage("bot", response.message);
+      addMessage("bot", response.message, response.suggestions);
     }
   }
 
@@ -148,6 +156,12 @@ export function useChatSession() {
     );
   }
 
+  // Et valgt emne sendes som en almindelig besked, så det går gennem det
+  // normale flow med match og bekræftelse (FR-HITL-1).
+  async function selectSuggestion(suggestion: Suggestion) {
+    await sendMessage(suggestion.label);
+  }
+
   // Næste besked bliver det nye svar på spørgsmålet (FR-HITL-2).
   function startEditing(answer: AnsweredQuestion) {
     setEditingAnswer(answer);
@@ -187,5 +201,6 @@ export function useChatSession() {
     rejectDraft,
     startEditing,
     cancelEditing,
+    selectSuggestion,
   };
 }
