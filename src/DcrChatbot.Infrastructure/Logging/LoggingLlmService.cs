@@ -32,7 +32,8 @@ public sealed class LoggingLlmService(
             "ExtractValue", options,
             () => inner.ExtractValueAsync(userMessage, matchedEvent, otherOpenEvents, options, cancellationToken),
             r => r.TokenUsage,
-            _ => matchedEvent.Id);
+            _ => matchedEvent.Id,
+            r => r.ValueResult.InferredReplies.Keys);
 
     public Task<(bool? IsConfirmed, TokenUsageResult TokenUsage)> ClassifyConfirmationAsync(
         string userMessage,
@@ -54,7 +55,8 @@ public sealed class LoggingLlmService(
             "ExtractIntent", options,
             () => inner.ExtractIntentAsync(userMessage, availableEvents, options, cancellationToken),
             r => r.TokenUsage,
-            r => r.MatchResult.MatchedEventId);
+            r => r.MatchResult.MatchedEventId,
+            r => r.MatchResult.InferredReplies.Keys);
 
     public async Task<string> GenerateTextAsync(
         string prompt,
@@ -78,25 +80,30 @@ public sealed class LoggingLlmService(
     }
 
     // Fælles for de fire metoder, der returnerer TokenUsageResult.
+    // inferredOf: afledte svar (FR-DCR-2) kommer i samme kald som hovedsvaret,
+    // så de logges på samme linje som ekstra event-id'er.
     private async Task<T> TrackAsync<T>(
         string operation,
         LlmOptions options,
         Func<Task<T>> call,
         Func<T, TokenUsageResult> usageOf,
-        Func<T, string?> targetOf)
+        Func<T, string?> targetOf,
+        Func<T, IEnumerable<string>?>? inferredOf = null)
     {
         var stopwatch = Stopwatch.StartNew();
         try
         {
             var result = await call();
             var usage = usageOf(result);
+            var inferredEventIds = inferredOf?.Invoke(result)?.ToArray() ?? [];
             logger.LogInformation(
                 "LLM {Operation} | {Provider} {ModelId} | tokens: {PromptTokens} ind / {CompletionTokens} ud | " +
-                "llm: {LlmMs} ms, total: {TotalMs} ms | event: {EventId} | prompt {PromptVersion}",
+                "llm: {LlmMs} ms, total: {TotalMs} ms | event: {EventId} | afledte: {InferredEventIds} | " +
+                "prompt {PromptVersion}",
                 operation, options.Provider, options.ActiveModelId,
                 usage.PromptTokens, usage.CompletionTokens,
                 usage.DurationMilliseconds, stopwatch.ElapsedMilliseconds,
-                targetOf(result), options.PromptVersion);
+                targetOf(result), inferredEventIds, options.PromptVersion);
             return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
