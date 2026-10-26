@@ -47,6 +47,9 @@ public sealed class ChatService(
         var message = RequireValue(request.Message, "Beskeden må ikke være tom.");
         return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
+            // NFR-4: alle LLM-kald herunder får SessionId og Mode på loglinjen.
+            using var scope = BeginSessionScope(session);
+
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
@@ -90,6 +93,8 @@ public sealed class ChatService(
         var message = RequireValue(request.Message, "Den reviderede besked må ikke være tom.");
         return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
+            using var scope = BeginSessionScope(session);
+
             var existingDraft = FindDraft(session, request.TargetPendingAnswerId);
             if (existingDraft.ExecutionStatus is "Executing" or "Executed")
             {
@@ -101,6 +106,13 @@ public sealed class ChatService(
             return await CreateDraftAsync(session, message, cancellationToken);
         }, cancellationToken);
     }
+
+    private IDisposable? BeginSessionScope(ChatSession session) =>
+        logger.BeginScope(new Dictionary<string, object>
+        {
+            ["SessionId"] = session.SessionId,
+            ["Mode"] = session.Mode.ToString()
+        });
 
     private async Task<ChatResponse> ResolveDraftAsync(
         string sessionId,
