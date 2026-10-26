@@ -76,6 +76,20 @@ export async function rejectChatDraft(
   })
 }
 
+// FR-HITL-2: retter et tidligere svar; backend svarer med en kladde eller
+// en forklaring på, hvorfor svaret ikke kan rettes.
+export async function editChatAnswer(
+  chatRequest: ChatRequest,
+): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/chat/edit', {
+    method: 'POST',
+    headers: {
+      'X-Session-Id': chatRequest.sessionId ?? '',
+    },
+    body: JSON.stringify(chatRequest),
+  })
+}
+
 export async function reviseChatDraft(
   chatRequest: ChatRequest,
 ): Promise<ChatResponse> {

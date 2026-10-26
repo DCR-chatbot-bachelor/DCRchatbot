@@ -1,22 +1,26 @@
 import { useEffect, useRef } from "react";
-import type { ChatMessage, PendingAnswer } from "../../types/chat";
+import type { AnsweredQuestion, ChatMessage, PendingAnswer } from "../../types/chat";
 import { DraftConfirmation } from "./DraftConfirmation";
 import { Message } from "./Message";
 
 interface ChatWindowProps {
   messages: ChatMessage[];
   pendingDraft: PendingAnswer | null;
+  editingEventId: string | null;
   disabled: boolean;
   onConfirmDraft: () => void;
   onRejectDraft: () => void;
+  onEditAnswer: (answer: AnsweredQuestion) => void;
 }
 
 export function ChatWindow({
   messages,
   pendingDraft,
+  editingEventId,
   disabled,
   onConfirmDraft,
   onRejectDraft,
+  onEditAnswer,
 }: ChatWindowProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +44,16 @@ export function ChatWindow({
             </div>
           )}
           {messages.map((message) => (
-            <Message key={message.id} {...message} />
+            <Message
+              key={message.id}
+              sender={message.sender}
+              content={message.content}
+              timestamp={message.timestamp}
+              answers={message.answers}
+              editingEventId={editingEventId}
+              disabled={disabled}
+              onEditAnswer={onEditAnswer}
+            />
           ))}
           {pendingDraft && (
             <DraftConfirmation

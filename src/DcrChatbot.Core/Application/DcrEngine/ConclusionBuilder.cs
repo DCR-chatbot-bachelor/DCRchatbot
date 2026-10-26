@@ -28,7 +28,12 @@ public static class ConclusionBuilder
 {
     public static Conclusion Build(GraphState? state)
     {
-        var executed = state?.ExecutedEvents.OrderBy(e => e.Sequence).ToList() ?? [];
+        // Et udført event, som grafen siden har udelukket (fx efter en
+        // rettelse, FR-HITL-2), gælder ikke længere og kommer ikke med.
+        var executed = state?.ExecutedEvents
+            .Where(e => e.Included)
+            .OrderBy(e => e.Sequence)
+            .ToList() ?? [];
 
         // Resultater er udførte labels med en værdi, DCR har beregnet (fx et
         // DMN-svar). Udførte labels uden værdi er FAQ-svar, botten allerede

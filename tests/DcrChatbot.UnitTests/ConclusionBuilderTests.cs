@@ -40,10 +40,10 @@ public sealed class ConclusionBuilderTests
         {
             Events =
             [
-                new DcrEvent { Id = "Country", Label = "What country are you in?", DataType = "choice", Sequence = 2, IsExecuted = true, Value = "Denmark", DisplayValue = "Danmark" },
-                new DcrEvent { Id = "Age", Label = "How old are you?", DataType = "int", Sequence = 1, IsExecuted = true, Value = "18" },
+                new DcrEvent { Id = "Country", Label = "What country are you in?", DataType = "choice", Sequence = 2, Included = true, IsExecuted = true, Value = "Denmark", DisplayValue = "Danmark" },
+                new DcrEvent { Id = "Age", Label = "How old are you?", DataType = "int", Sequence = 1, Included = true, IsExecuted = true, Value = "18" },
                 new DcrEvent { Id = "height", Label = "What is your height?", DataType = "int", Sequence = 3, IsEnabled = true, IsPending = true, Value = "180" },
-                new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", Sequence = 4, IsExecuted = true, Value = "Can you buy alcohol? Yes" },
+                new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", Sequence = 4, Included = true, IsExecuted = true, Value = "Can you buy alcohol? Yes" },
                 new DcrEvent { Id = "Velkommen", Label = "Velkommen til chatbotten", DataType = "label", IsEnabled = true, IsPending = true },
                 new DcrEvent { Id = "A2", Label = "Ikke vist svar", DataType = "label", IsEnabled = true, IsExecuted = false }
             ]
@@ -66,11 +66,11 @@ public sealed class ConclusionBuilderTests
         {
             Events =
             [
-                new DcrEvent { Id = "Age", Label = "How old are you?", DataType = "int", Roles = "User", Sequence = 0, IsExecuted = true, Value = "18", DisplayValue = "18" },
-                new DcrEvent { Id = "Country", Label = "What country are you in?", DataType = "choice", Roles = "User", Sequence = 1, IsExecuted = true, Value = "Denmark", DisplayValue = "Denmark" },
-                new DcrEvent { Id = "DMN", Label = "DMN", DataType = "", Roles = "Robot", Sequence = 2, IsExecuted = true, Value = "Yes", DisplayValue = "Yes" },
-                new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", Roles = "Robot", Sequence = 3, IsExecuted = true, Value = "Can you buy alcohol? Yes", DisplayValue = "Can you buy alcohol? Yes" },
-                new DcrEvent { Id = "height", Label = "What is your height?", DataType = "int", Roles = "User", Sequence = 4, IsExecuted = true, Value = "180", DisplayValue = "180" }
+                new DcrEvent { Id = "Age", Label = "How old are you?", DataType = "int", Roles = "User", Sequence = 0, Included = true, IsExecuted = true, Value = "18", DisplayValue = "18" },
+                new DcrEvent { Id = "Country", Label = "What country are you in?", DataType = "choice", Roles = "User", Sequence = 1, Included = true, IsExecuted = true, Value = "Denmark", DisplayValue = "Denmark" },
+                new DcrEvent { Id = "DMN", Label = "DMN", DataType = "", Roles = "Robot", Sequence = 2, Included = true, IsExecuted = true, Value = "Yes", DisplayValue = "Yes" },
+                new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", Roles = "Robot", Sequence = 3, Included = true, IsExecuted = true, Value = "Can you buy alcohol? Yes", DisplayValue = "Can you buy alcohol? Yes" },
+                new DcrEvent { Id = "height", Label = "What is your height?", DataType = "int", Roles = "User", Sequence = 4, Included = true, IsExecuted = true, Value = "180", DisplayValue = "180" }
             ]
         };
 
@@ -87,13 +87,34 @@ public sealed class ConclusionBuilderTests
     }
 
     [Fact]
+    public void Build_ExecutedButExcludedEvent_IsLeftOut()
+    {
+        // Efter en rettelse kan grafen udelukke et svar, der allerede er
+        // udført; det gælder ikke længere (FR-HITL-2).
+        var state = new GraphState
+        {
+            Events =
+            [
+                new DcrEvent { Id = "Age", Label = "How old are you?", DataType = "int", Included = true, IsExecuted = true, Value = "15" },
+                new DcrEvent { Id = "Country", Label = "What country are you in?", DataType = "choice", Included = false, IsExecuted = true, Value = "Denmark" },
+                new DcrEvent { Id = "A4", Label = "Gammelt resultat", DataType = "label", Included = false, IsExecuted = true, Value = "Yes" }
+            ]
+        };
+
+        var conclusion = ConclusionBuilder.Build(state);
+
+        Assert.Empty(conclusion.Results);
+        Assert.Equal([new ConclusionAnswer("How old are you?", "15")], conclusion.Answers);
+    }
+
+    [Fact]
     public void Build_ExecutedFaqAnswerWithoutValue_IsNotRepeated()
     {
         // Et FAQ-svar står i labelens tekst og er allerede vist i chatten;
         // det er ikke et resultat, DCR har beregnet.
         var state = new GraphState
         {
-            Events = [new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", IsExecuted = true }]
+            Events = [new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", Included = true, IsExecuted = true }]
         };
 
         Assert.Empty(ConclusionBuilder.Build(state).Results);
@@ -104,7 +125,7 @@ public sealed class ConclusionBuilderTests
     {
         var state = new GraphState
         {
-            Events = [new DcrEvent { Id = "start", Label = "Start", DataType = "string", IsExecuted = true }]
+            Events = [new DcrEvent { Id = "start", Label = "Start", DataType = "string", Included = true, IsExecuted = true }]
         };
 
         Assert.True(ConclusionBuilder.Build(state).IsEmpty);

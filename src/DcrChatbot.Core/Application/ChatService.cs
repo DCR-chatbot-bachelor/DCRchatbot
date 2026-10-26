@@ -107,6 +107,95 @@ public sealed class ChatService(
         }, cancellationToken);
     }
 
+    public async Task<ChatResponse> EditAnswerAsync(
+        string sessionId,
+        ChatRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var message = RequireValue(request.Message, "Det nye svar må ikke være tomt.");
+        var eventId = RequireValue(request.EventId, "EventId er påkrævet for at rette et svar.");
+        return await sessionStore.ExecuteAsync(sessionId, async session =>
+        {
+            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+
+            // FR-HITL-2: spørg DCR, ikke sessionens kopi, om svaret stadig kan rettes.
+            session.IsGraphStateStale = true;
+            await EnsureFreshStateAsync(session, cancellationToken);
+            var dcrEvent = session.CurrentGraphState?.GetEvent(eventId);
+            var refusal = GetEditRefusal(dcrEvent);
+            if (refusal is not null)
+            {
+                session.History.Add(new ChatMessage { Sender = "Bot", Content = refusal });
+                return ToResponse(session, refusal);
+            }
+
+            var (extracted, _) = await llmService.ExtractValueAsync(
+                message, dcrEvent!, [], llmOptions, cancellationToken);
+            var value = string.IsNullOrWhiteSpace(extracted.ExtractedValue)
+                ? null
+                : ToCanonicalValue(dcrEvent!, extracted.ExtractedValue);
+            if (value is null || !EventValidator.Validate(dcrEvent, value).IsValid)
+            {
+                return ToResponse(
+                    session,
+                    $"Jeg kunne ikke forstå det som et svar på '{dcrEvent!.Label}'. Prøv at skrive det igen.");
+            }
+
+            var previousValue = GetAnswerValue(dcrEvent!);
+            if (string.Equals(value, previousValue, StringComparison.OrdinalIgnoreCase))
+            {
+                return ToResponse(session, $"Dit svar på '{dcrEvent!.Label}' er allerede '{previousValue}'.");
+            }
+
+            // Rettelsen bekræftes som enhver anden kladde (FR-HITL-1) og
+            // kommer først i køen, foran eventuelle afledte svar.
+            session.PendingAnswersQueue.RemoveAll(d =>
+                d.PreviousValue is not null &&
+                string.Equals(d.EventId, dcrEvent!.Id, StringComparison.OrdinalIgnoreCase));
+            session.PendingAnswersQueue.Insert(0, new PendingAnswer
+            {
+                EventId = dcrEvent!.Id,
+                Question = dcrEvent.Label,
+                ProposedValue = value,
+                PreviousValue = previousValue
+            });
+
+            return ToResponse(
+                session,
+                $"Vil du ændre dit svar på '{dcrEvent.Label}' fra '{previousValue}' til '{value}'?");
+        }, cancellationToken);
+    }
+
+    // Forklarer borgeren, hvorfor et svar ikke kan rettes, eller null hvis det kan.
+    private static string? GetEditRefusal(DcrEvent? dcrEvent)
+    {
+        if (dcrEvent is null)
+        {
+            return "Det spørgsmål findes ikke længere i forløbet, så svaret kan ikke rettes.";
+        }
+
+        if (string.Equals(dcrEvent.DataType, "label", StringComparison.OrdinalIgnoreCase) ||
+            dcrEvent.IsExecuted != true)
+        {
+            return $"Du har ikke svaret på '{dcrEvent.Label}' endnu, så der er ikke noget at rette.";
+        }
+
+        if (!dcrEvent.Included)
+        {
+            return $"Spørgsmålet '{dcrEvent.Label}' er ikke længere en del af forløbet efter dine " +
+                "andre svar, så det kan ikke rettes.";
+        }
+
+        return dcrEvent.IsEnabled
+            ? null
+            : $"Svaret på '{dcrEvent.Label}' kan ikke rettes lige nu, fordi forløbet ikke længere " +
+              "tillader det. Det sker typisk, når et senere trin bygger videre på svaret.";
+    }
+
+    private static string GetAnswerValue(DcrEvent dcrEvent) =>
+        !string.IsNullOrWhiteSpace(dcrEvent.Value) ? dcrEvent.Value
+        : !string.IsNullOrWhiteSpace(dcrEvent.DisplayValue) ? dcrEvent.DisplayValue
+        : string.Empty;
     private IDisposable? BeginSessionScope(ChatSession session) =>
         logger.BeginScope(new Dictionary<string, object>
         {
@@ -162,6 +251,7 @@ public sealed class ChatService(
         }
 
         var pendingLabelsBefore = GetPendingLabels(session.CurrentGraphState).Select(e => e.Id).ToList();
+        var answersInEffectBefore = GetAnswersInEffect(session.CurrentGraphState);
         session.PendingLabelsBeforeExecution = pendingLabelsBefore;
         draft.ExecutionStatus = "Executing";
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -189,7 +279,12 @@ public sealed class ChatService(
 
         var answers = FindNewAnswers(session.CurrentGraphState, pendingLabelsBefore);
         session.PendingLabelsBeforeExecution = null;
-        DropQueuedDraftsThatNoLongerApply(session);
+        var droppedDrafts = DropQueuedDraftsThatNoLongerApply(session);
+
+        // FR-HITL-2: en rettelse bekræftes med de konsekvenser, den fik.
+        var revisionParts = draft.PreviousValue is null
+            ? []
+            : DescribeRevision(draft, droppedDrafts, answersInEffectBefore, session.CurrentGraphState);
 
         // Er der flere kladder i køen (FR-DCR-2), vises den næste i stedet
         // for et nyt spørgsmål eller en konklusion.
@@ -256,13 +351,63 @@ public sealed class ChatService(
                 : "Tak for dine svar. Forløbet er nu afsluttet.");
         }
 
-        var reply = string.Join("\n\n", replyParts);
+        var reply = string.Join("\n\n", revisionParts.Concat(replyParts));
         if (reply.Length > 0)
         {
             session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
         }
 
-        return ToResponse(session, reply);
+        // FAQ-match er ikke et svar, borgeren kan rette; det er alt andet.
+        var confirmedAnswer = draft.IsEventMatch
+            ? null
+            : new AnsweredQuestion
+            {
+                EventId = draft.EventId,
+                Question = draft.Question ?? draft.EventId,
+                Value = draft.ProposedValue
+            };
+        return ToResponse(session, reply, confirmedAnswer);
+    }
+
+    // Borgerens svar, der gælder lige nu: udførte og stadig inkluderede
+    // spørgsmål (ikke labels og ikke DCR's egne Robot-events).
+    private static Dictionary<string, DcrEvent> GetAnswersInEffect(GraphState? state) =>
+        state?.ExecutedEvents
+            .Where(e => e.Included &&
+                        !string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase) &&
+                        e.Roles?.Contains("Robot", StringComparison.OrdinalIgnoreCase) != true)
+            .ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase)
+        ?? new(StringComparer.OrdinalIgnoreCase);
+
+    // Ændringen og dens konsekvenser: svar i køen, der er ryddet, og
+    // tidligere svar, som grafen har udelukket efter rettelsen.
+    private static List<string> DescribeRevision(
+        PendingAnswer draft,
+        IReadOnlyList<PendingAnswer> droppedDrafts,
+        IReadOnlyDictionary<string, DcrEvent> answersInEffectBefore,
+        GraphState? stateAfter)
+    {
+        var parts = new List<string>
+        {
+            $"Dit svar på '{draft.Question}' er ændret fra '{draft.PreviousValue}' til '{draft.ProposedValue}'."
+        };
+
+        var answersInEffectAfter = GetAnswersInEffect(stateAfter);
+        var noLongerInEffect = answersInEffectBefore.Values
+            .Where(e => !string.Equals(e.Id, draft.EventId, StringComparison.OrdinalIgnoreCase) &&
+                        !answersInEffectAfter.ContainsKey(e.Id))
+            .OrderBy(e => e.Sequence)
+            .Select(e => e.Label)
+            .Concat(droppedDrafts.Select(d => d.Question ?? d.EventId))
+            .ToList();
+
+        if (noLongerInEffect.Count > 0)
+        {
+            parts.Add("Det betyder, at disse svar ikke længere gælder:\n" +
+                string.Join("\n", noLongerInEffect.Select(label => $"- {label}")));
+        }
+
+        return parts;
     }
 
     // DCR.Repo kræver en tom streng som værdi for labels; null giver en serverfejl.
@@ -439,10 +584,12 @@ public sealed class ChatService(
     // Når et svar er udført, kan grafen have ændret sig: et afledt svar kan
     // være blevet disabled eller allerede besvaret. Det fjernes fra køen i
     // stedet for at blive vist for borgeren.
-    private static void DropQueuedDraftsThatNoLongerApply(ChatSession session)
+    private static List<PendingAnswer> DropQueuedDraftsThatNoLongerApply(ChatSession session)
     {
-        session.PendingAnswersQueue.RemoveAll(draft =>
+        var dropped = session.PendingAnswersQueue.Where(draft =>
         {
+            // En rettelse gælder et svar, der allerede er udført, så "udført"
+            // gør den ikke ugyldig; ellers er reglerne de samme.
             if (draft.ExecutionStatus != "Pending")
             {
                 return false;
@@ -450,10 +597,14 @@ public sealed class ChatService(
 
             var dcrEvent = session.CurrentGraphState?.GetEvent(draft.EventId);
             return dcrEvent is null ||
-                (dcrEvent.IsExecuted == true &&
+                (draft.PreviousValue is null &&
+                 dcrEvent.IsExecuted == true &&
                  !string.Equals(dcrEvent.DataType, "choice", StringComparison.OrdinalIgnoreCase)) ||
                 !EventValidator.Validate(dcrEvent, draft.ProposedValue).IsValid;
-        });
+        }).ToList();
+
+        session.PendingAnswersQueue.RemoveAll(dropped.Contains);
+        return dropped;
     }
 
     // Grafens egen stavemåde af en choice-værdi (fx "Denmark" frem for "denmark").
@@ -571,12 +722,14 @@ public sealed class ChatService(
             string.IsNullOrWhiteSpace(pendingAnswerId) || draft.Id == pendingAnswerId)
         ?? throw new KeyNotFoundException("Den ønskede kladde blev ikke fundet.");
 
-    private static ChatResponse ToResponse(ChatSession session, string message) => new()
+    private static ChatResponse ToResponse(
+        ChatSession session, string message, AnsweredQuestion? confirmedAnswer = null) => new()
     {
         SessionId = session.SessionId,
         Message = message,
         Mode = session.Mode,
         PendingDraft = session.PendingAnswersQueue.FirstOrDefault(),
+        ConfirmedAnswer = confirmedAnswer,
         AvailableEvents = session.CurrentGraphState?.EnabledEvents.ToList() ?? [],
         ExecutedEvents = session.CurrentGraphState?.ExecutedEvents.ToList() ?? [],
         IsEnded = session.CurrentGraphState?.IsAccepting ?? false

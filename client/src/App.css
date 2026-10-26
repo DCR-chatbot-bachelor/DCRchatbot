@@ -684,6 +684,61 @@
 .chat-panel .draft-card__actions {
   flex-wrap: wrap;
 }
+/* Ret tidligere svar: lille blyant ved borgerens besked (FR-HITL-2). */
+.message__bubble {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.message--user .message__bubble {
+  justify-content: flex-end;
+}
+.message__edit {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #83918b;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+.message__edit:hover:not(:disabled),
+.message__edit--active {
+  color: #237f67;
+  background: #f1f7f3;
+}
+.message__edit:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.message--superseded .message__body p {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+.message__note {
+  color: #83918b;
+  font-size: 10px;
+}
+.edit-banner {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 15px;
+  padding: 7px 10px;
+  color: #29443b;
+  font-size: 11px;
+  background: #f1f7f3;
+  border-radius: 8px;
+}
+.edit-banner .button {
+  padding: 0;
+  font-size: 11px;
+}
 .composer {
   display: flex;
   flex: 0 0 auto;

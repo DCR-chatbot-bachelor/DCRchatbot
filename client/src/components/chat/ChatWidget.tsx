@@ -6,6 +6,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatPanelHeader } from "./ChatPanelHeader";
 import { ChatSetup } from "./ChatSetup";
 import { ChatWindow } from "./ChatWindow";
+import { EditAnswerBanner } from "./EditAnswerBanner";
 
 interface ChatWidgetProps {
   isOpen: boolean;
@@ -59,14 +60,26 @@ export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
               <ChatWindow
                 messages={chat.messages}
                 pendingDraft={chat.pendingDraft}
+                editingEventId={chat.editingAnswer?.eventId ?? null}
                 disabled={chat.isSending}
                 onConfirmDraft={chat.confirmDraft}
                 onRejectDraft={chat.rejectDraft}
+                onEditAnswer={chat.startEditing}
               />
+              {chat.editingAnswer && (
+                <EditAnswerBanner
+                  answer={chat.editingAnswer}
+                  onCancel={chat.cancelEditing}
+                />
+              )}
               <ChatComposer
                 disabled={chat.isSending}
                 placeholder={
-                  isFullscreen ? "Skriv dit svar her..." : "Skriv en besked..."
+                  chat.editingAnswer
+                    ? "Skriv dit nye svar..."
+                    : isFullscreen
+                      ? "Skriv dit svar her..."
+                      : "Skriv en besked..."
                 }
                 onSend={chat.sendMessage}
               />
