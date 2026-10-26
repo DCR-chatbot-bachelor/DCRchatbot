@@ -3,28 +3,51 @@ using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
 using DcrChatbot.Infrastructure.LlmProviders;
+using DcrChatbot.Infrastructure.Logging;
 using DcrChatbot.Infrastructure.Session;
 using DcrChatbot.WebApi.Middleware;
+using Serilog;
+using Serilog.Filters;
+using Serilog.Formatting.Compact;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Viser Serilog-fejl (f.eks. manglende skriverettigheder) i konsollen.
+Serilog.Debugging.SelfLog.Enable(Console.Error);
+
+// NFR-4: LLM-kald logges til konsol og til en JSON Lines-fil, der kan analyseres bagefter.
+var logPath = Path.Combine(builder.Environment.ContentRootPath, "logs", "llm-calls-.jsonl");
+Console.WriteLine($"LLM log: {logPath}");
+
+builder.Host.UseSerilog((context, services, config) => config
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", Serilog.Events.LogEventLevel.Information)
+    .MinimumLevel.Override("System", Serilog.Events.LogEventLevel.Warning)
+    .ReadFrom.Configuration(context.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Logger(sub => sub
+        .Filter.ByIncludingOnly(Matching.FromSource<LoggingLlmService>())
+        .WriteTo.File(new CompactJsonFormatter(), logPath, rollingInterval: RollingInterval.Day)));
 
 // Add services to the container.
 
 builder.Services
     .AddOptions<LlmOptions>()
     .Bind(builder.Configuration.GetSection(LlmOptions.SectionName))
-     .ValidateDataAnnotations()
-     .Validate(
-         options => options.HasApiKeyForProvider(),
-         "API-nøglen for den valgte Llm:Provider mangler (Llm:ApiKey for Gemini, Llm:OpenAi:ApiKey for OpenAi).")
-     .ValidateOnStart();
+    .ValidateDataAnnotations()
+    .Validate(
+        options => options.HasApiKeyForProvider(),
+        "API-nøglen for den valgte Llm:Provider mangler (Llm:ApiKey for Gemini, Llm:OpenAi:ApiKey for OpenAi).")
+    .ValidateOnStart();
 
 builder.Services
     .AddOptions<DcrOptions>()
     .Bind(builder.Configuration.GetSection(DcrOptions.SectionName))
-     .ValidateDataAnnotations()
-     .ValidateOnStart();
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -45,12 +68,14 @@ builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProv
     client.BaseAddress = new Uri(dcrOptions.RootUrl, UriKind.Absolute);
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+
 // NFR-2: LLM-udbyderen vælges via Llm:Provider uden ændringer i Core.
 var llmProvider = builder.Configuration.GetValue<LlmProvider?>(
     $"{LlmOptions.SectionName}:{nameof(LlmOptions.Provider)}") ?? LlmProvider.Gemini;
+
 if (llmProvider == LlmProvider.OpenAi)
 {
-    builder.Services.AddHttpClient<ILlmService, OpenAiLlmService>(client =>
+    builder.Services.AddHttpClient<OpenAiLlmService>(client =>
     {
         client.BaseAddress = new Uri("https://api.openai.com/", UriKind.Absolute);
         client.Timeout = TimeSpan.FromSeconds(60);
@@ -58,12 +83,21 @@ if (llmProvider == LlmProvider.OpenAi)
 }
 else
 {
-    builder.Services.AddHttpClient<ILlmService, GeminiLlmService>(client =>
+    builder.Services.AddHttpClient<GeminiLlmService>(client =>
     {
         client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/", UriKind.Absolute);
         client.Timeout = TimeSpan.FromSeconds(60);
     });
 }
+
+// Decorator: ChatService beder om ILlmService og får LoggingLlmService,
+// som pakker den rigtige provider ind og logger tokens og svartid.
+builder.Services.AddTransient<ILlmService>(sp => new LoggingLlmService(
+    llmProvider == LlmProvider.OpenAi
+        ? sp.GetRequiredService<OpenAiLlmService>()
+        : sp.GetRequiredService<GeminiLlmService>(),
+    sp.GetRequiredService<ILogger<LoggingLlmService>>()));
+
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
