@@ -196,41 +196,30 @@ public sealed class ChatService(
         var hasQueuedDrafts = session.PendingAnswersQueue.Count > 0;
         var nextPendingEvent = hasQueuedDrafts ? null : GetNextAnswerablePendingEvent(session.CurrentGraphState);
         var replyParts = answers.Select(GetAnswerText).ToList();
-
-        // Hvis alle spørgsmål er besvaret, find eventuelle aktive konklusioner (f.eks. DMN resultater)
-        List<DcrEvent> conclusionLabels = [];
-        if (!hasQueuedDrafts && nextPendingEvent is null && replyParts.Count == 0)
-        {
-            conclusionLabels = session.CurrentGraphState?.EnabledEvents
-                .Where(e => string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)
-                         && (!string.IsNullOrWhiteSpace(e.Value) || !string.IsNullOrWhiteSpace(e.DisplayValue)))
-                .ToList() ?? [];
-
-            if (conclusionLabels.Count > 0)
-            {
-                replyParts.AddRange(conclusionLabels.Select(GetAnswerText));
-            }
-        }
-
         if (nextPendingEvent is not null)
         {
             replyParts.Add(nextPendingEvent.Label);
         }
 
-        var reply = replyParts.Count > 0
-            ? string.Join("\n\n", replyParts)
-            : hasQueuedDrafts ? string.Empty : "Tak for dine svar. Forløbet er nu afsluttet.";
-
-        if (reply.Length > 0)
+        // Et FAQ-spørgsmål, der ikke gør et svar pending, er ikke slutningen
+        // på et forløb; det mangler bare et svar i grafen.
+        var hasNoFaqAnswer = draft.IsEventMatch && !hasQueuedDrafts && replyParts.Count == 0;
+        if (hasNoFaqAnswer)
         {
-            session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+            replyParts.Add("Jeg har desværre ikke et svar på det spørgsmål endnu.");
         }
+
+        // En formular er slut, når der hverken er kladder, spørgsmål eller svar
+        // tilbage. Grafens resultat-labels (fx et DMN-svar) udføres så først,
+        // så konklusionen kun bygger på udførte events (FR-DCR-5).
+        var isFinished = !draft.IsEventMatch && !hasQueuedDrafts && nextPendingEvent is null && replyParts.Count == 0;
+        var resultLabels = isFinished ? FindResultLabels(session.CurrentGraphState) : [];
 
         // Svarene udføres, så samme spørgsmål kan stilles igen og svaret
         // vises på ny. De sættes i kø og gemmes først: fejler udførslen,
         // har borgeren stadig fået svaret, og køen prøves igen ved næste
         // bekræftelse.
-        session.AnswerLabelsToExecute.AddRange(answers.Concat(conclusionLabels).Select(e => e.Id));
+        session.AnswerLabelsToExecute.AddRange(answers.Concat(resultLabels).Select(e => e.Id));
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         try
         {
@@ -257,6 +246,20 @@ public sealed class ChatService(
                 exception,
                 "Kunne ikke hente grafens tilstand i session {SessionId}; hentes ved næste handling.",
                 session.SessionId);
+        }
+
+        if (isFinished)
+        {
+            var conclusionText = ConclusionBuilder.Build(session.CurrentGraphState).ToText();
+            replyParts.Add(conclusionText.Length > 0
+                ? conclusionText
+                : "Tak for dine svar. Forløbet er nu afsluttet.");
+        }
+
+        var reply = string.Join("\n\n", replyParts);
+        if (reply.Length > 0)
+        {
+            session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
         }
 
         return ToResponse(session, reply);
@@ -470,6 +473,18 @@ public sealed class ChatService(
 
     private static readonly HashSet<string> ChoiceYesWords =
         new(["ja", "yes", "jo", "jep", "ja tak", "ok", "okay", "korrekt", "rigtigt"], StringComparer.OrdinalIgnoreCase);
+
+    // Labels som DCR har beregnet en værdi til (fx et DMN-resultat), men som
+    // endnu ikke er udført. De udføres ved forløbets afslutning, så de
+    // kommer med i konklusionen. Pending labels er ikke resultater: det
+    // permanente anker er pending og må aldrig udføres (FR-DCR-4).
+    private static List<DcrEvent> FindResultLabels(GraphState? state) =>
+        state?.EnabledEvents
+            .Where(e => string.Equals(e.DataType, "label", StringComparison.OrdinalIgnoreCase)
+                     && e.IsExecuted != true
+                     && !e.IsPending
+                     && (!string.IsNullOrWhiteSpace(e.Value) || !string.IsNullOrWhiteSpace(e.DisplayValue)))
+            .ToList() ?? [];
 
     private static IEnumerable<DcrEvent> GetPendingLabels(GraphState? state) =>
         state?.EnabledEvents.Where(e =>

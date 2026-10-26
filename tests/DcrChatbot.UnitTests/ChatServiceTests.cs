@@ -490,14 +490,25 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         SetupLlmMatch("height", "180");
         var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "180" });
 
+        // Som i DCR: højden er udført med værdien 180, og konklusionen er
+        // først udført, når botten selv har udført den.
+        var conclusionExecuted = false;
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A4", "", It.IsAny<CancellationToken>()))
+            .Callback(() => conclusionExecuted = true)
+            .ReturnsAsync(true);
         dcrRepository
             .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new GraphState
+            .ReturnsAsync(() => new GraphState
             {
                 IsAccepting = true,
                 Events = [
-                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, IsPending = false },
-                    conclusion
+                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, IsPending = false, Value = "180" },
+                    new DcrEvent
+                    {
+                        Id = conclusion.Id, Label = conclusion.Label, Value = conclusion.Value, DisplayValue = conclusion.DisplayValue,
+                        DataType = "label", IsEnabled = true, IsExecuted = conclusionExecuted ? true : null
+                    }
                 ]
             });
 
@@ -505,6 +516,81 @@ public async Task RejectDraft_DoesNotExecuteEvent()
 
         Assert.Equal("Can you buy alcohol? Yes", response.Message);
         Assert.True(response.IsEnded);
+    }
+
+    [Fact]
+    public async Task FaqQuestionWithoutAnswer_SaysSo_AndDoesNotRepeatEarlierAnswersOrTouchTheAnchor()
+    {
+        // Som "SU faq": minSU har et svar-label; førstegang peger kun på et
+        // andet spørgsmål; ankeret er pending og har fået en værdi i grafen.
+        var executed = new HashSet<string>();
+        var pending = new HashSet<string> { "Velkommen" };
+        GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "Velkommen", Label = "Velkommen til chatbotten", DataType = "label", Included = true, IsEnabled = true, IsPending = pending.Contains("Velkommen"), IsExecuted = executed.Contains("Velkommen") ? true : null, Value = "Jeg er en chatboit" },
+                new DcrEvent { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", Included = true, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)", IsExecuted = executed.Contains("minSU") ? true : null },
+                new DcrEvent { Id = "førstegang", Label = "Det er første gang jeg søger SU - hvad gør jeg?", DataType = "choice", Included = true, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)", IsExecuted = executed.Contains("førstegang") ? true : null },
+                new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", Included = true, IsEnabled = true, IsPending = pending.Contains("A2Copy"), IsExecuted = executed.Contains("A2Copy") ? true : null }
+            ]
+        };
+        var session = await StartSessionAsync(State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(State);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) =>
+            {
+                executed.Add(id);
+                pending.Remove(id);
+                if (id == "minSU") pending.Add("A2Copy");
+            })
+            .ReturnsAsync(true);
+
+        SetupLlmMatch("minSU", null);
+        var minSuDraft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad er minsu?" });
+        var minSu = await service.ConfirmDraftAsync(session.SessionId, minSuDraft.PendingDraft!.Id);
+        Assert.Equal("På minSU kan du følge med i din SU.", minSu.Message);
+
+        SetupLlmMatch("førstegang", null);
+        var firstTimeDraft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "første gang?" });
+        var firstTime = await service.ConfirmDraftAsync(session.SessionId, firstTimeDraft.PendingDraft!.Id);
+
+        Assert.Equal("Jeg har desværre ikke et svar på det spørgsmål endnu.", firstTime.Message);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "Velkommen", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ConfirmDraft_ConclusionLeavesOutResultThatCouldNotBeExecuted()
+    {
+        // FR-DCR-5: fejler udførslen af resultatet, må det ikke stå i
+        // konklusionen, som om det var sket.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events = [new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsPending = true }]
+        });
+        SetupLlmMatch("height", "180");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "180" });
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "A4", "", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("DCR nede"));
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                Events = [
+                    new DcrEvent { Id = "height", Label = "height", DataType = "int", IsEnabled = true, IsExecuted = true, Value = "180" },
+                    new DcrEvent { Id = "A4", Label = "Conclusion", DataType = "label", IsEnabled = true, Value = "Can you buy alcohol? Yes" }
+                ]
+            });
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Tak for dine svar. Forløbet er nu afsluttet.", response.Message);
     }
 
     [Fact]

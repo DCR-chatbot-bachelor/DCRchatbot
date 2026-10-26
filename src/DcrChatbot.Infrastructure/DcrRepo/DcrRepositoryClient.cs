@@ -276,7 +276,7 @@ private HttpRequestMessage CreateRequest(HttpMethod method, string relativeUri)
             EventType = GetString(element, "eventType"),
             EngineDataType = GetNullableInt32(element, "engineDataType"),
             IsEnabled = GetBoolean(element, "enabled", "isEnabled"),
-            IsExecuted = GetNullableBoolean(element, "executed", "isExecuted"),
+            IsExecuted = GetExecuted(element),
             IsPending = GetBoolean(element, "pending", "isPending"),
             ChoiceValues = GetString(element, "choiceValues") ?? string.Empty,
             AllowedValues = ReadStringArray(element, "allowedValues", "choiceValues")
@@ -328,6 +328,28 @@ private HttpRequestMessage CreateRequest(HttpMethod method, string relativeUri)
     {
         var value = GetString(element, names);
         return DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+    }
+
+    // DCR.Repo sender "executed" som tidspunktet for udførslen
+    // ("2026-10-18T23:52:26.54+02:00") og null, hvis eventet ikke er udført.
+    // Et tidspunkt betyder altså udført; true/false accepteres også.
+    private static bool? GetExecuted(JsonElement element)
+    {
+        var value = GetProperty(element, "executed", "isExecuted");
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return null;
+            }
+
+            return bool.TryParse(text, out var parsed)
+                ? parsed
+                : DateTimeOffset.TryParse(text, out _) ? true : null;
+        }
+
+        return GetNullableBoolean(element, "executed", "isExecuted");
     }
 
     private static bool? GetNullableBoolean(JsonElement element, params string[] names)
