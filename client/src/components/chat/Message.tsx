@@ -1,4 +1,4 @@
-import type { AnsweredQuestion, MessageAnswer } from "../../types/chat";
+import type { AnsweredQuestion, MessageAnswer, QuickReply } from "../../types/chat";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -8,6 +8,9 @@ interface MessageProps {
   editingEventId?: string | null;
   disabled?: boolean;
   onEditAnswer?: (answer: AnsweredQuestion) => void;
+  /** Kun sat på den seneste bot-besked, så gamle knapper ikke kan vælges. */
+  quickReplies?: QuickReply[];
+  onSelectQuickReply?: (reply: QuickReply) => void;
 }
 
 export function Message({
@@ -18,6 +21,8 @@ export function Message({
   editingEventId = null,
   disabled = false,
   onEditAnswer,
+  quickReplies = [],
+  onSelectQuickReply,
 }: MessageProps) {
   const editable = answers.filter((a) => !a.isSuperseded);
   const isSuperseded = answers.length > 0 && editable.length === 0;
@@ -57,6 +62,23 @@ export function Message({
             ))}
           <p>{content}</p>
         </div>
+        {onSelectQuickReply && quickReplies.length > 0 && (
+          // Grafens emner (FR-LLM-3) eller svar på et choice-spørgsmål;
+          // et klik sendes som borgerens besked.
+          <div className="message__quick-replies">
+            {quickReplies.map((reply) => (
+              <button
+                key={reply.key}
+                type="button"
+                className="quick-reply"
+                disabled={disabled}
+                onClick={() => onSelectQuickReply(reply)}
+              >
+                {reply.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </article>
   );

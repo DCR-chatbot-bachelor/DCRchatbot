@@ -12,7 +12,17 @@ import type {
   ChatResponse,
   ExecutionMode,
   PendingAnswer,
+  QuickReply,
 } from "../types/chat";
+
+// Grafens emner (FR-LLM-3) og svarene på et choice-spørgsmål vises begge
+// som knapper under bot-beskeden.
+function toQuickReplies(response: ChatResponse): QuickReply[] {
+  return [
+    ...(response.suggestions ?? []).map((s) => ({ key: `topic:${s.eventId}`, label: s.label })),
+    ...(response.answerOptions ?? []).map((o) => ({ key: `answer:${o.value}`, label: o.label })),
+  ];
+}
 
 function createMessage(
   sender: ChatMessage["sender"],
@@ -69,9 +79,16 @@ export function useChatSession() {
   // Beskeden, kladderne i køen kom fra; bekræftede svar knyttes til den.
   const draftSourceMessageId = useRef<string | null>(null);
 
-  function addMessage(sender: ChatMessage["sender"], content: string) {
+  function addMessage(
+    sender: ChatMessage["sender"],
+    content: string,
+    quickReplies?: QuickReply[],
+  ) {
     if (!content.trim()) return null;
-    const message = createMessage(sender, content);
+    const message = {
+      ...createMessage(sender, content),
+      quickReplies: quickReplies?.length ? quickReplies : undefined,
+    };
     setMessages((current) => [...current, message]);
     return message.id;
   }
@@ -91,7 +108,7 @@ export function useChatSession() {
       );
     }
     if (!response.pendingDraft || answersOpenDraft) {
-      addMessage("bot", response.message);
+      addMessage("bot", response.message, toQuickReplies(response));
     }
   }
 
@@ -148,6 +165,12 @@ export function useChatSession() {
     );
   }
 
+  // Et valgt emne eller svar sendes som en almindelig besked, så det går
+  // gennem det normale flow med match og bekræftelse (FR-HITL-1).
+  async function selectQuickReply(reply: QuickReply) {
+    await sendMessage(reply.label);
+  }
+
   // Næste besked bliver det nye svar på spørgsmålet (FR-HITL-2).
   function startEditing(answer: AnsweredQuestion) {
     setEditingAnswer(answer);
@@ -187,5 +210,6 @@ export function useChatSession() {
     rejectDraft,
     startEditing,
     cancelEditing,
+    selectQuickReply,
   };
 }

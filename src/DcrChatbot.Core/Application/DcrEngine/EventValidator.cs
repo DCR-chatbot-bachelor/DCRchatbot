@@ -98,7 +98,12 @@ public static class EventValidator
     // Når den rettes, kan denne metode fjernes og erstattes med
     // dcrEvent.AllowedValues.Select(o => o.Value).
     // Offentlig, så LLM-prompten og ChatService bruger præcis de samme gyldige værdier.
-    public static IReadOnlyList<string> GetChoiceValues(DcrEvent dcrEvent)
+    public static IReadOnlyList<string> GetChoiceValues(DcrEvent dcrEvent) =>
+        GetChoiceOptions(dcrEvent).Select(option => option.Value).ToList();
+
+    // Tekst og værdi for hvert valg: "Ja tak (ja)" giver ("Ja tak", "ja").
+    // Står der ingen parentes, er teksten også værdien.
+    public static IReadOnlyList<(string Label, string Value)> GetChoiceOptions(DcrEvent dcrEvent)
     {
         if (string.IsNullOrWhiteSpace(dcrEvent.ChoiceValues))
         {
@@ -107,16 +112,21 @@ public static class EventValidator
 
         return dcrEvent.ChoiceValues
             .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-            .Select(ExtractValue)
+            .Select(ParseOption)
             .ToList();
     }
 
-    private static string ExtractValue(string raw)
+    private static (string Label, string Value) ParseOption(string raw)
     {
         var openParen = raw.IndexOf('(');
         var closeParen = raw.IndexOf(')');
-        return openParen >= 0 && closeParen > openParen
-            ? raw[(openParen + 1)..closeParen].Trim()
-            : raw.Trim();
+        if (openParen < 0 || closeParen <= openParen)
+        {
+            return (raw.Trim(), raw.Trim());
+        }
+
+        var value = raw[(openParen + 1)..closeParen].Trim();
+        var label = raw[..openParen].Trim();
+        return (label.Length > 0 ? label : value, value);
     }
 }

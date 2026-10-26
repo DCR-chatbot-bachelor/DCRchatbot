@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import type { AnsweredQuestion, ChatMessage, PendingAnswer } from "../../types/chat";
+import type {
+  AnsweredQuestion,
+  ChatMessage,
+  PendingAnswer,
+  QuickReply,
+} from "../../types/chat";
 import { DraftConfirmation } from "./DraftConfirmation";
 import { Message } from "./Message";
 
@@ -11,6 +16,7 @@ interface ChatWindowProps {
   onConfirmDraft: () => void;
   onRejectDraft: () => void;
   onEditAnswer: (answer: AnsweredQuestion) => void;
+  onSelectQuickReply: (reply: QuickReply) => void;
 }
 
 export function ChatWindow({
@@ -21,8 +27,14 @@ export function ChatWindow({
   onConfirmDraft,
   onRejectDraft,
   onEditAnswer,
+  onSelectQuickReply,
 }: ChatWindowProps) {
   const endRef = useRef<HTMLDivElement>(null);
+
+  // Knapperne kan kun vælges fra den seneste besked, og ikke mens en kladde
+  // eller en rettelse er åben, hvor et klik ellers ville blive et svar på den.
+  const lastMessageId = messages.at(-1)?.id;
+  const canSelectQuickReplies = pendingDraft === null && editingEventId === null;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -53,6 +65,12 @@ export function ChatWindow({
               editingEventId={editingEventId}
               disabled={disabled}
               onEditAnswer={onEditAnswer}
+              quickReplies={
+                canSelectQuickReplies && message.id === lastMessageId
+                  ? message.quickReplies
+                  : undefined
+              }
+              onSelectQuickReply={onSelectQuickReply}
             />
           ))}
           {pendingDraft && (

@@ -36,6 +36,24 @@ export interface ChatMessage {
   timestamp: string
   /** De bekræftede svar, beskeden gav; hvert kan rettes (FR-HITL-2). */
   answers?: MessageAnswer[]
+  /** Knapper under beskeden: grafens emner eller svar på et choice-spørgsmål. */
+  quickReplies?: QuickReply[]
+}
+
+/** En knap, hvis tekst sendes som borgerens besked, når der trykkes på den. */
+export interface QuickReply {
+  key: string
+  label: string
+}
+
+export interface Suggestion {
+  eventId: string
+  label: string
+}
+
+export interface AnswerOption {
+  label: string
+  value: string
 }
 
 export interface MessageAnswer {
@@ -73,6 +91,8 @@ export interface ChatResponse {
   pendingDraft?: PendingAnswer | null
   requiresConfirmation: boolean
   confirmedAnswer?: AnsweredQuestion | null
+  suggestions?: Suggestion[]
+  answerOptions?: AnswerOption[]
   availableEvents: DcrEvent[]
   executedEvents: DcrEvent[]
   isEnded: boolean

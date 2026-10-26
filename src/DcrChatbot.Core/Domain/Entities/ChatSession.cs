@@ -12,6 +12,13 @@ public class ChatSession
     public List<PendingAnswer> PendingAnswersQueue { get; set; } = new();
 
     /// <summary>
+    /// Afledte svar til felter, der endnu ikke kan udfyldes, fordi de venter
+    /// på et tidligere felt (FR-DCR-2). De flyttes til køen, når feltet bliver
+    /// enabled, så borgeren ikke skal gentage dem.
+    /// </summary>
+    public List<PendingAnswer> ParkedAnswers { get; set; } = new();
+
+    /// <summary>
     /// Svar-labels der er vist for borgeren, men endnu ikke udført i DCR.
     /// Prøves igen ved næste bekræftelse, hvis udførslen fejlede.
     /// </summary>

@@ -816,6 +816,434 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         Assert.Null(response.PendingDraft);
     }
 
+    // En FAQ-graf som "SU faq": et anker-label, svar-labels og FAQ-spørgsmål.
+    private static GraphState FaqGraph() => new()
+    {
+        Events =
+        [
+            new DcrEvent { Id = "Velkommen", Label = "Velkommen til chatbotten", DataType = "label", IsEnabled = true, IsPending = true },
+            new DcrEvent { Id = "ansøgning", Label = "Hvordan finder jeg ud af, om min ansøgning er under behandling?", DataType = "choice", Sequence = 2, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+            new DcrEvent { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", Sequence = 1, IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+            new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", IsEnabled = true },
+            new DcrEvent { Id = "lukket", Label = "Et emne der ikke er åbent", DataType = "choice", IsEnabled = false, ChoiceValues = "ja (ja), nej (nej)" }
+        ]
+    };
+
+    [Theory]
+    [InlineData(null)]          // LLM'en fandt intet match, fx "hvad kan jeg få hjælp til?"
+    [InlineData("opfundet")]    // LLM'en fandt på et event, der ikke findes
+    public async Task SendMessage_NoMatch_ShowsTheGraphsTopicsAsSuggestions(string? matchedEventId)
+    {
+        var session = await StartSessionAsync(FaqGraph());
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((matchedEventId, new TokenUsageResult()));
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad kan jeg få hjælp til?" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
+        Assert.Equal(["minSU", "ansøgning"], response.Suggestions.Select(s => s.EventId));
+        Assert.Equal("Hvorfor skal jeg bruge minSU?", response.Suggestions[0].Label);
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task EventWithoutDataType_IsNeverAskedOrMatched_SoTheBotDoesNotGetStuck()
+    {
+        // Som "nyt faq" → "fakta om faq" i SU-grafen: faq har ingen datatype,
+        // så den er hverken et svar (label) eller et spørgsmål med en værdi.
+        var faqPending = false;
+        GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "nyt", Label = "nyt faq", DataType = "choice", IsEnabled = true, ChoiceValues = "ja (ja), nej (nej)" },
+                new DcrEvent { Id = "faq", Label = "fakta om faq", DataType = "", IsEnabled = true, IsPending = faqPending }
+            ]
+        };
+        var session = await StartSessionAsync(State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(State);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", "nyt", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => faqPending = true)
+            .ReturnsAsync(true);
+
+        IEnumerable<DcrEvent>? offeredCandidates = null;
+        SetupLlmMatch("nyt", null);
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IEnumerable<DcrEvent>, LlmOptions, CancellationToken>((_, candidates, _, _) => offeredCandidates = candidates)
+            .ReturnsAsync(("nyt", new TokenUsageResult()));
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "fortæl om det nye" });
+        var confirmed = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Jeg har desværre ikke et svar på det spørgsmål endnu.", confirmed.Message);
+        Assert.DoesNotContain(offeredCandidates!, e => e.Id == "faq");
+
+        // Næste besked bliver ikke tolket som et svar på "fakta om faq".
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(((string?)null, new TokenUsageResult()));
+        var next = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad kan du hjælpe med" });
+
+        Assert.Null(next.PendingDraft);
+        Assert.DoesNotContain("fakta om faq", next.Message);
+        llmService.Verify(
+            s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ChoiceQuestion_ComesWithTheGraphsValuesAsAnswerOptions()
+    {
+        var (session, _) = await StartFormSessionAsync();
+
+        // Første spørgsmål er et tal-spørgsmål: ingen knapper.
+        SetupValueExtraction("18");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "18" });
+        Assert.Empty(draft.AnswerOptions);
+
+        // Næste spørgsmål er et choice-spørgsmål: grafens værdier som knapper.
+        var next = await service.ConfirmDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Hvilket land bor du i?", next.Message);
+        Assert.Equal(["Denmark", "Sweden"], next.AnswerOptions.Select(o => o.Value));
+    }
+
+    [Fact]
+    public async Task AnswerOptions_AreNotShown_WhileADraftIsOpen()
+    {
+        var (session, _) = await StartFormSessionAsync(alreadyExecuted: "Age");
+        SetupValueExtraction("Denmark");
+
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Danmark" });
+
+        Assert.NotNull(draft.PendingDraft);
+        Assert.Empty(draft.AnswerOptions);
+    }
+
+    [Fact]
+    public async Task FormChoiceField_IsNeitherATopicNorReExecuted_AfterTheFormIsDone()
+    {
+        // Efter formularen: "uddannelse" er et udført choice-felt uden ja-valg.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events =
+            [
+                new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", IsEnabled = true, IsExecuted = true, ChoiceValues = "Ja (ja), Nej (nej)" },
+                new DcrEvent { Id = "A17", Label = "uddannelse", DataType = "choice", IsEnabled = true, IsExecuted = true, Value = "eud", ChoiceValues = "Gymnasium (gym), Erhvervsuddannelse (eud)" }
+            ]
+        });
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(("A17", new TokenUsageResult()));
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "uddannelse" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal(["hjælp"], response.Suggestions.Select(s => s.EventId));
+        dcrRepository.Verify(
+            r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), "A17", It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task TopicButton_MatchesTheEventDirectly_WithoutAskingTheLlm()
+    {
+        // Emnet indeholder "hjælp", som LLM'en kan tolke som et generelt
+        // spørgsmål; et tryk på knappen sender præcis emnets tekst.
+        var session = await StartSessionAsync(new GraphState
+        {
+            Events = [new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", IsEnabled = true, ChoiceValues = "Ja (ja), Nej (nej)" }]
+        });
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(((string?)null, new TokenUsageResult()));
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jeg vil gerne have hjælp til at søge SU " });
+
+        Assert.Equal("hjælp", response.PendingDraft!.EventId);
+        llmService.Verify(
+            s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AnswerButton_UsesTheChoiceValueDirectly_WithoutAskingTheLlm()
+    {
+        var (session, _) = await StartFormSessionAsync(alreadyExecuted: "Age");
+        llmService.Invocations.Clear();
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Denmark" });
+
+        Assert.Equal("Country", response.PendingDraft!.EventId);
+        Assert.Equal("Denmark", response.PendingDraft.ProposedValue);
+        llmService.Verify(
+            s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RejectingAFormAnswer_AsksTheQuestionAgain()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18");
+        var draft = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "18" });
+
+        var response = await service.RejectDraftAsync(session.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Okay, så spørger jeg igen: Hvor gammel er du?", response.Message);
+    }
+
+    [Fact]
+    public async Task RejectingAnEdit_KeepsTheEarlierAnswer()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        await AnswerAsync(session, "18");
+        SetupValueExtraction("24");
+        var revision = await service.EditAnswerAsync(session.SessionId, new ChatRequest { EventId = "Age", Message = "24" });
+
+        var response = await service.RejectDraftAsync(session.SessionId, revision.PendingDraft!.Id);
+
+        Assert.Equal("Okay, dit svar på 'Hvor gammel er du?' er stadig '18'.", response.Message);
+    }
+
+    [Fact]
+    public async Task Start_FaqGraph_GreetsWithTheGraphsTopics()
+    {
+        dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("sim-1");
+        dcrRepository.Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>())).ReturnsAsync(FaqGraph());
+
+        var response = await service.StartAsync(new ChatRequest { GraphId = "graph-1" });
+
+        Assert.Equal("Hej! Hvad vil du vide noget om?", response.Message);
+        Assert.Equal(["minSU", "ansøgning"], response.Suggestions.Select(s => s.EventId));
+    }
+
+    [Fact]
+    public async Task Start_FormGraph_AsksTheFirstQuestion_WithoutSuggestions()
+    {
+        var graph = new FakeFormGraph();
+        dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("sim-1");
+        dcrRepository.Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>())).ReturnsAsync(graph.State());
+
+        var response = await service.StartAsync(new ChatRequest { GraphId = "graph-1" });
+
+        Assert.Equal("Hvor gammel er du?", response.Message);
+        Assert.Empty(response.Suggestions);
+    }
+
+    [Fact]
+    public async Task FormFlow_MessageThatIsNotAnAnswer_RemindsOfTheQuestion()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction(null);
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "hvad kan jeg få hjælp til?" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Jeg mangler stadig et svar på: Hvor gammel er du?", response.Message);
+    }
+
+    [Fact]
+    public async Task FormFlow_InvalidAnswer_SaysItDoesNotFitTheQuestion()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("atten");
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "atten" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Det svar passer ikke til spørgsmålet: Hvor gammel er du?", response.Message);
+    }
+
+    // Som formularen i "SU faq": "hjælp" (ja) åbner navn → adresse →
+    // uddannelse med condition-pile; uddannelse gør "Tak!" pending, og
+    // fortryd (A12) lukker formularen og forsvinder, når den er udfyldt.
+    private sealed class FakeSuForm
+    {
+        private readonly Dictionary<string, string?> executed = new(StringComparer.OrdinalIgnoreCase);
+        private bool formOpen;
+
+        private bool Done(string id) => executed.ContainsKey(id);
+
+        public GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "hjælp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", Roles = "User", Sequence = 0, Included = true, IsEnabled = true, IsExecuted = Done("hjælp") ? true : null, ChoiceValues = "Ja (ja), Nej (nej)" },
+                Field("A8", "Hvad er dit fulde navn?", "text", 1, enabled: formOpen),
+                Field("A9", "Hvad er din adresse?", "text", 2, enabled: formOpen && Done("A8")),
+                Field("A17", "Hvilken uddannelse skal du i gang med?", "choice", 3, enabled: formOpen && Done("A9"), "Gymnasium (gym), Erhvervsuddannelse (eud)"),
+                new DcrEvent { Id = "A18", Label = "Tak! Vi har noteret dine oplysninger.", DataType = "label", Roles = "Chatbot", Sequence = 4, Included = formOpen, IsEnabled = formOpen, IsPending = Done("A17") && !Done("A18"), IsExecuted = Done("A18") ? true : null },
+                new DcrEvent { Id = "A12", Label = "jeg vil ikke ansøge alligevel", DataType = "choice", Roles = "User", Sequence = 5, Included = formOpen && !Done("A17"), IsEnabled = formOpen && !Done("A17"), IsExecuted = Done("A12") ? true : null, ChoiceValues = "Ja (ja), Nej (nej)" }
+            ]
+        };
+
+        public void Execute(string id, string? value)
+        {
+            executed[id] = value;
+            if (id == "hjælp" && value == "ja") formOpen = true;
+            if (id == "A12") formOpen = false;
+        }
+
+        private DcrEvent Field(string id, string label, string dataType, int sequence, bool enabled, string choiceValues = "") => new()
+        {
+            Id = id, Label = label, DataType = dataType, Roles = "User", Sequence = sequence, ChoiceValues = choiceValues,
+            Included = formOpen, IsEnabled = enabled, IsPending = formOpen && !Done(id),
+            IsExecuted = Done(id) ? true : null, Value = executed.GetValueOrDefault(id)
+        };
+    }
+
+    private async Task<(ChatSession Session, FakeSuForm Graph)> StartSuFormAsync()
+    {
+        var graph = new FakeSuForm();
+        var session = await StartSessionAsync(graph.State());
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => graph.State());
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, value, _) => graph.Execute(id, value))
+            .ReturnsAsync(true);
+
+        // Formularen åbnes med emne-knappen og bekræftes.
+        var open = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg vil gerne have hjælp til at søge SU" });
+        await service.ConfirmDraftAsync(session.SessionId, open.PendingDraft!.Id);
+        return (session, graph);
+    }
+
+    [Fact]
+    public async Task Form_InferredReplyForAFieldWaitingOnACondition_IsQueuedAndConfirmedInTurn()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A9"] = "Lige her 1" });
+
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "min adresse er lige her 1, og mit navn er Jens" });
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+
+        var address = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Equal("A9", address.PendingDraft!.EventId);
+        Assert.Equal("Lige her 1", address.PendingDraft.ProposedValue);
+
+        var next = await service.ConfirmDraftAsync(session.SessionId, address.PendingDraft.Id);
+        Assert.Equal("Hvilken uddannelse skal du i gang med?", next.Message);
+    }
+
+    [Fact]
+    public async Task Form_WhenOnlyInferredRepliesAreFound_AsksAgainForTheAskedQuestionAlone()
+    {
+        var (session, _) = await StartSuFormAsync();
+        // Første kald (med de andre spørgsmål) finder kun adressen; andet
+        // kald (kun det stillede spørgsmål) finder navnet.
+        llmService
+            .Setup(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.Is<IEnumerable<DcrEvent>>(o => o.Any()), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmValueResult { InferredReplies = new() { ["A9"] = "Lige her 1" } }, new TokenUsageResult()));
+        llmService
+            .Setup(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.Is<IEnumerable<DcrEvent>>(o => !o.Any()), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmValueResult { ExtractedValue = "Jens" }, new TokenUsageResult()));
+
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jens, jeg bor lige her 1" });
+
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+        Assert.Equal("Jens", name.PendingDraft.ProposedValue);
+        var address = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Equal("Lige her 1", address.PendingDraft!.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_AnswerForALaterField_IsParked_AndOfferedWhenTheFieldIsReady()
+    {
+        // "jens, jeg starter i gym snart": uddannelse venter på adressen.
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A17"] = "gym" });
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jens, jeg starter i gym snart" });
+        Assert.Equal("A8", name.PendingDraft!.EventId);
+
+        // Efter navnet spørges der om adressen; uddannelsen er ikke glemt.
+        var askAddress = await service.ConfirmDraftAsync(session.SessionId, name.PendingDraft.Id);
+        Assert.Null(askAddress.PendingDraft);
+        Assert.Equal("Hvad er din adresse?", askAddress.Message);
+
+        SetupValueExtraction("her");
+        var address = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "her" });
+        var education = await service.ConfirmDraftAsync(session.SessionId, address.PendingDraft!.Id);
+
+        Assert.Equal("A17", education.PendingDraft!.EventId);
+        Assert.Equal("gym", education.PendingDraft.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_InferredReplyForABlockedField_IsNotShownBeforeTheAskedQuestion()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction(null, new() { ["A9"] = "Lige her 1" });
+
+        var response = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "jeg bor lige her 1" });
+
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Jeg mangler stadig et svar på: Hvad er dit fulde navn?", response.Message);
+    }
+
+    [Fact]
+    public async Task Form_RejectingTheName_KeepsTheAddressParked_UntilANameIsGiven()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction("Jens", new() { ["A9"] = "Lige her 1" });
+        var name = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jens, lige her 1" });
+
+        // Adressen kan ikke vises, før et navn er bekræftet.
+        var response = await service.RejectDraftAsync(session.SessionId, name.PendingDraft!.Id);
+        Assert.Null(response.PendingDraft);
+        Assert.Equal("Okay, så spørger jeg igen: Hvad er dit fulde navn?", response.Message);
+
+        // Når det rigtige navn er bekræftet, kommer adressen frem igen.
+        SetupValueExtraction("Jensen");
+        var corrected = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jensen" });
+        var address = await service.ConfirmDraftAsync(session.SessionId, corrected.PendingDraft!.Id);
+
+        Assert.Equal("A9", address.PendingDraft!.EventId);
+        Assert.Equal("Lige her 1", address.PendingDraft.ProposedValue);
+    }
+
+    [Fact]
+    public async Task Form_CancelTopicMidForm_IsMatchedAndStopsTheForm()
+    {
+        var (session, _) = await StartSuFormAsync();
+        SetupValueExtraction(null);
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(("A12", new TokenUsageResult()));
+
+        var cancel = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "afslut det her tak" });
+        Assert.Equal("A12", cancel.PendingDraft!.EventId);
+        Assert.True(cancel.PendingDraft.IsEventMatch);
+
+        var response = await service.ConfirmDraftAsync(session.SessionId, cancel.PendingDraft.Id);
+
+        Assert.Equal("Okay, så stopper vi der.", response.Message);
+    }
+
+    [Fact]
+    public async Task Form_ChoosingTheFormAgainAfterFillingIt_PointsToThePencil()
+    {
+        var (session, _) = await StartSuFormAsync();
+        await AnswerAsync(session, "Jens");
+        await AnswerAsync(session, "Lige her 1");
+        var done = await AnswerAsync(session, "gym");
+        Assert.Equal("Tak! Vi har noteret dine oplysninger.", done.Message);
+
+        var again = await service.SendMessageAsync(session.SessionId, new ChatRequest { Message = "Jeg vil gerne have hjælp til at søge SU" });
+        var response = await service.ConfirmDraftAsync(session.SessionId, again.PendingDraft!.Id);
+
+        Assert.Equal("Det har du allerede været igennem. Du kan rette dine svar med blyanten ✎ ved dem.", response.Message);
+    }
+
     // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.
     private async Task<ChatResponse> AnswerAsync(ChatSession session, string value)
     {

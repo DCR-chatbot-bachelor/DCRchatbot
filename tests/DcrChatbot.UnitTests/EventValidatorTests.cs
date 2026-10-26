@@ -111,4 +111,15 @@ public sealed class EventValidatorTests
 
         Assert.False(EventValidator.Validate(dcrEvent, "ikke en dato").IsValid);
     }
+
+    [Fact]
+    public void GetChoiceOptions_SplitsLabelAndValue()
+    {
+        var dcrEvent = new DcrEvent { ChoiceValues = "Ja tak (ja), nej (nej), Denmark" };
+
+        Assert.Equal(
+            [("Ja tak", "ja"), ("nej", "nej"), ("Denmark", "Denmark")],
+            EventValidator.GetChoiceOptions(dcrEvent));
+        Assert.Equal(["ja", "nej", "Denmark"], EventValidator.GetChoiceValues(dcrEvent));
+    }
 }
