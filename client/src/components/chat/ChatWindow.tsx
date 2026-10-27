@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MessageCircle } from "lucide-react";
 import type {
   AnsweredQuestion,
   ChatMessage,
@@ -47,7 +48,7 @@ export function ChatWindow({
           {messages.length === 0 && (
             <div className="chat-window__empty">
               <span className="chat-window__empty-icon" aria-hidden="true">
-                ✦
+                <MessageCircle size={18} />
               </span>
               <h2>Start en samtale</h2>
               <p>

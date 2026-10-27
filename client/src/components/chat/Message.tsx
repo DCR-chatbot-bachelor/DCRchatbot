@@ -1,4 +1,5 @@
 import type { AnsweredQuestion, MessageAnswer, QuickReply } from "../../types/chat";
+import { Pencil } from "lucide-react";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -57,7 +58,7 @@ export function Message({
                 disabled={disabled}
                 onClick={() => onEditAnswer(answer)}
               >
-                ✎
+                <Pencil size={12} aria-hidden="true" />
               </button>
             ))}
           <p>{content}</p>
