@@ -16,6 +16,7 @@ interface ChatWindowProps {
   onConfirmDraft: () => void;
   onRejectDraft: () => void;
   onEditAnswer: (answer: AnsweredQuestion) => void;
+  onReturnTo: (answer: AnsweredQuestion) => void;
   onSelectQuickReply: (reply: QuickReply) => void;
 }
 
@@ -27,6 +28,7 @@ export function ChatWindow({
   onConfirmDraft,
   onRejectDraft,
   onEditAnswer,
+  onReturnTo,
   onSelectQuickReply,
 }: ChatWindowProps) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -65,6 +67,7 @@ export function ChatWindow({
               editingEventId={editingEventId}
               disabled={disabled}
               onEditAnswer={onEditAnswer}
+              onReturnTo={onReturnTo}
               quickReplies={
                 canSelectQuickReplies && message.id === lastMessageId
                   ? message.quickReplies
