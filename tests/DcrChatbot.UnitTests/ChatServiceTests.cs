@@ -1,5 +1,6 @@
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Dtos;
+using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
@@ -25,6 +26,7 @@ public sealed class ChatServiceTests
             llmService.Object,
             sessionStore,
             Options.Create(new LlmOptions()),
+            new TurnTrace(),
             NullLogger<ChatService>.Instance);
     }
 
