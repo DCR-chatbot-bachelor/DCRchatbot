@@ -73,6 +73,83 @@ public sealed class DcrRepositoryClient : IDcrRepository
         };
     }
 
+    public async Task<DcrGraphDefinition> GetGraphDefinitionAsync(
+        string graphId,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(
+            HttpMethod.Get,
+            $"api/graphs/{Uri.EscapeDataString(graphId)}");
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, "get DCR graph definition", cancellationToken);
+
+        await using var content = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var document = await XDocument.LoadAsync(content, LoadOptions.None, cancellationToken);
+        return ParseGraphDefinition(document);
+    }
+
+    // Læser DCR's graf-XML: events (også inde i nestings), deres tekster fra
+    // labelMappings, datatyper og valg, og relationerne under constraints.
+    private static DcrGraphDefinition ParseGraphDefinition(XDocument document)
+    {
+        var specification = document.Root?.Element("specification")
+            ?? throw new JsonException("DCR.Repo graph response had no specification.");
+        var resources = specification.Element("resources");
+        var labels = resources?
+            .Element("labelMappings")?
+            .Elements("labelMapping")
+            .GroupBy(m => (string?)m.Attribute("eventId") ?? string.Empty)
+            .ToDictionary(g => g.Key, g => (string?)g.First().Attribute("labelId") ?? string.Empty)
+            ?? new Dictionary<string, string>();
+
+        var definition = new DcrGraphDefinition();
+        void ReadEvents(XElement? parent, string? parentId)
+        {
+            foreach (var element in parent?.Elements("event") ?? [])
+            {
+                var id = (string?)element.Attribute("id") ?? string.Empty;
+                var custom = element.Element("custom");
+                var eventData = custom?.Element("eventData");
+                definition.Events.Add(new GraphEventDefinition
+                {
+                    Id = id,
+                    Label = labels.GetValueOrDefault(id, id),
+                    DataType = eventData?.Element("dataType")?.Value.Trim() ?? string.Empty,
+                    Roles = string.Join(",", custom?.Element("roles")?.Elements("role").Select(r => r.Value.Trim()) ?? []),
+                    Sequence = int.TryParse(custom?.Element("sequence")?.Value, out var sequence) ? sequence : 0,
+                    ParentId = parentId,
+                    IsNesting = element.Elements("event").Any(),
+                    Options = eventData?.Element("dictionary")?.Elements("item")
+                        .Select(item => new GraphChoiceOption
+                        {
+                            Label = (string?)item.Attribute("label") ?? string.Empty,
+                            Value = (string?)item.Attribute("value") ?? string.Empty
+                        })
+                        .ToList() ?? []
+                });
+                ReadEvents(element, id);
+            }
+        }
+
+        ReadEvents(resources?.Element("events"), null);
+
+        // constraints: <conditions><condition sourceId targetId/></conditions>, <responses>…
+        definition.Relations = specification.Element("constraints")?
+            .Elements()
+            .SelectMany(group => group.Elements().Select(relation => new GraphRelation
+            {
+                Type = relation.Name.LocalName,
+                SourceId = (string?)relation.Attribute("sourceId") ?? string.Empty,
+                TargetId = (string?)relation.Attribute("targetId") ?? string.Empty
+            }))
+            .ToList() ?? [];
+
+        return definition;
+    }
+
     public async Task<IReadOnlyList<DcrGraph>> GetGraphsAsync(
         CancellationToken cancellationToken = default)
     {

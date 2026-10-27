@@ -16,7 +16,7 @@ interface ChatWidgetProps {
 /** Den flydende chat: boble, panel og samspillet mellem grafvalg og samtale. */
 export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [mode, setMode] = useState<ExecutionMode>("NeuroSymbolic");
+  const [mode, setMode] = useState<ExecutionMode>("DcrStrict");
   const graphs = useGraphs();
   const chat = useChatSession();
   const error = chat.error ?? graphs.error;

@@ -6,10 +6,16 @@ public class ChatSession
 {
     public string SessionId { get; set; } = Guid.NewGuid().ToString();
     public string GraphId { get; set; } = string.Empty;
-    public ExecutionMode Mode { get; set; } = ExecutionMode.NeuroSymbolic;
+    public ExecutionMode Mode { get; set; } = ExecutionMode.DcrStrict;
     public string? SimulationId { get; set; }
     public GraphState? CurrentGraphState { get; set; }
     public List<PendingAnswer> PendingAnswersQueue { get; set; } = new();
+
+    /// <summary>
+    /// Grafens FAQ og formularer som tekst, bygget ved samtalens start. Bruges
+    /// af LlmOnly og DcrGuided, så LLM'en har samme viden som grafen (FR-TEST-1).
+    /// </summary>
+    public string? GraphKnowledge { get; set; }
 
     /// <summary>
     /// Afledte svar til felter, der endnu ikke kan udfyldes, fordi de venter

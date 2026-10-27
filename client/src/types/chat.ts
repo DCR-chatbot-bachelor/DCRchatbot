@@ -1,4 +1,5 @@
-export type ExecutionMode = 'Baseline' | 'NeuroSymbolic'
+/** FR-TEST-1: de tre tilstande, samme spørgsmål kan sammenlignes i. */
+export type ExecutionMode = 'DcrStrict' | 'DcrGuided' | 'LlmOnly'
 
 export interface DcrGraph {
   graphId: string

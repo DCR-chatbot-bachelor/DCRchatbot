@@ -10,6 +10,12 @@ public class PendingAnswer
     public string ProposedValue { get; set; } = string.Empty;
 
     /// <summary>
+    /// Borgerens egen besked, kladden blev lavet ud fra. DcrGuided bruger den
+    /// til at målrette svaret på det, borgeren faktisk spurgte om.
+    /// </summary>
+    public string? UserMessage { get; set; }
+
+    /// <summary>
     /// Det nuværende svar, når kladden er en rettelse af et tidligere svar
     /// (FR-HITL-2). Null for almindelige svar.
     /// </summary>

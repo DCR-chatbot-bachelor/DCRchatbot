@@ -115,6 +115,54 @@ public sealed class DcrRepositoryClientTests
         Assert.Equal(["1000", "2000"], dcrEvent.AllowedValues);
     }
 
+    [Fact]
+    public async Task GetGraphDefinitionAsync_ReadsEventsNestingsLabelsChoicesAndRelations()
+    {
+        // Uddrag af "SU faq", som DCR.Repo returnerer grafen som XML.
+        var xml = """
+            <dcrgraph title="SU faq"><specification><resources><events>
+              <event id="minSU"><custom><roles><role>User</role></roles><sequence>2</sequence>
+                <eventData><dataType format="string">choice</dataType>
+                  <dictionary><item label="ja" value="ja" /><item label="nej" value="nej" /></dictionary></eventData></custom></event>
+              <event id="A2Copy"><custom><roles><role>Chatbot</role></roles><sequence>3</sequence>
+                <eventData><dataType>label</dataType></eventData></custom></event>
+              <event id="A11"><custom><sequence>8</sequence></custom>
+                <event id="A17"><custom><roles><role>User</role></roles><sequence>16</sequence>
+                  <eventData><dataType>choice</dataType>
+                    <dictionary><item label="Gymnasium" value="gym" /><item label="Erhvervsuddannelse" value="eud" /></dictionary></eventData></custom></event>
+              </event>
+            </events>
+            <labelMappings>
+              <labelMapping eventId="minSU" labelId="Hvorfor skal jeg bruge minSU?" />
+              <labelMapping eventId="A2Copy" labelId="På minSU kan du følge med i din SU." />
+              <labelMapping eventId="A17" labelId="Hvilken uddannelse skal du i gang med?" />
+            </labelMappings></resources>
+            <constraints>
+              <responses><response sourceId="minSU" targetId="A2Copy" /></responses>
+              <includes><include sourceId="hjælp" targetId="A11" /></includes>
+              <conditions />
+            </constraints></specification></dcrgraph>
+            """;
+        var handler = new RecordingHandler(_ => Response(xml, "application/xml"));
+        var client = CreateClient(handler);
+
+        var definition = await client.GetGraphDefinitionAsync("2012392");
+
+        var minSu = Assert.Single(definition.Events, e => e.Id == "minSU");
+        Assert.Equal("Hvorfor skal jeg bruge minSU?", minSu.Label);
+        Assert.Equal("choice", minSu.DataType);
+        Assert.Equal("User", minSu.Roles);
+        Assert.Equal(["ja", "nej"], minSu.Options.Select(o => o.Value));
+
+        Assert.True(Assert.Single(definition.Events, e => e.Id == "A11").IsNesting);
+        var education = Assert.Single(definition.Events, e => e.Id == "A17");
+        Assert.Equal("A11", education.ParentId);
+        Assert.Equal(["Gymnasium", "Erhvervsuddannelse"], education.Options.Select(o => o.Label));
+
+        Assert.Contains(definition.Relations, r => r.Type == "response" && r.SourceId == "minSU" && r.TargetId == "A2Copy");
+        Assert.Contains(definition.Relations, r => r.Type == "include" && r.SourceId == "hjælp" && r.TargetId == "A11");
+    }
+
     [Theory]
     [InlineData("\"2026-10-18T23:52:26.5425687+02:00\"", true)]
     [InlineData("null", null)]

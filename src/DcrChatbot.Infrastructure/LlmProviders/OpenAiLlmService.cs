@@ -118,7 +118,11 @@ public sealed class OpenAiLlmService : ILlmService
             Model = modelId,
             Messages =
             [
-                new ChatMessage { Role = "system", Content = LlmIntentPrompt.BuildSystemPrompt(options) },
+                new ChatMessage
+                {
+                    Role = "system",
+                    Content = jsonResponse ? LlmIntentPrompt.BuildSystemPrompt(options) : LlmIntentPrompt.TextSystemPrompt
+                },
                 new ChatMessage { Role = "user", Content = prompt }
             ],
             MaxCompletionTokens = options.MaxOutputTokens,
