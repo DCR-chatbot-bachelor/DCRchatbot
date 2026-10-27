@@ -20,7 +20,8 @@ public sealed class LlmOptions
 
     public double Temperature { get; set; } = 0.0;
     public int MaxOutputTokens { get; set; } = 2048;
-    public string PromptVersion { get; set; } = "v1";
+    // Skal matche PromptCatalog.Version; det tjekkes ved opstart.
+    public string PromptVersion { get; set; } = Application.Llm.PromptCatalog.Version;
     public string SystemPrompt { get; set; } = string.Empty;
 
     public bool HasApiKeyForProvider() => Provider switch

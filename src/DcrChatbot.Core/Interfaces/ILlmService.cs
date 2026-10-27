@@ -46,9 +46,10 @@ public interface ILlmService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Genererer pædagogisk fritekstsvar (f.eks. til FAQ eller opsummering).
+    /// Genererer fritekst (fx svar i DcrGuided og LlmOnly). Returnerer også
+    /// token-forbruget, så alle tilstande kan sammenlignes på pris (NFR-4).
     /// </summary>
-    Task<string> GenerateTextAsync(
+    Task<(string Text, TokenUsageResult TokenUsage)> GenerateTextAsync(
         string prompt,
         LlmOptions options,
         CancellationToken cancellationToken = default);

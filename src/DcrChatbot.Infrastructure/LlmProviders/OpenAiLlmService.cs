@@ -93,7 +93,7 @@ public sealed class OpenAiLlmService : ILlmService
         return (result, usage);
     }
 
-    public async Task<string> GenerateTextAsync(
+    public async Task<(string Text, TokenUsageResult TokenUsage)> GenerateTextAsync(
         string prompt,
         LlmOptions options,
         CancellationToken cancellationToken = default)
@@ -101,8 +101,7 @@ public sealed class OpenAiLlmService : ILlmService
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
         ValidateOptions(options);
 
-        var (text, _) = await SendPromptAsync(prompt, options, jsonResponse: false, cancellationToken);
-        return text;
+        return await SendPromptAsync(prompt, options, jsonResponse: false, cancellationToken);
     }
 
     private async Task<(string Text, TokenUsageResult Usage)> SendPromptAsync(

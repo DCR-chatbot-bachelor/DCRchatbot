@@ -1284,7 +1284,7 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     private void SetupGeneratedText(Func<string, string> reply) =>
         llmService
             .Setup(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string prompt, LlmOptions _, CancellationToken _) => reply(prompt));
+            .ReturnsAsync((string prompt, LlmOptions _, CancellationToken _) => (reply(prompt), new TokenUsageResult()));
 
     [Fact]
     public async Task SameQuestion_DcrStrict_ShowsTheGraphsAnswerVerbatim_WithoutGeneratingText()
