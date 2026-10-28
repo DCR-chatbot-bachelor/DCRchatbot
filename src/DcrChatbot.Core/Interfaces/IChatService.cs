@@ -34,4 +34,9 @@ public interface IChatService
         string sessionId,
         ChatRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<ChatResponse> ReturnToMessageAsync(
+        string sessionId,
+        ChatRequest request,
+        CancellationToken cancellationToken = default);
 }

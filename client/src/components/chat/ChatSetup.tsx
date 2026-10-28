@@ -1,4 +1,5 @@
 import type { DcrGraph, ExecutionMode } from "../../types/chat";
+import { Plus } from "lucide-react";
 
 interface ChatSetupProps {
   graphs: DcrGraph[];
@@ -94,7 +95,8 @@ export function ChatSetup({
         disabled={!selectedGraphId || isSending}
         onClick={onStart}
       >
-        {startLabel()}
+        {!hasSession && <Plus size={14} aria-hidden="true" />}
+        <span>{startLabel()}</span>
       </button>
     </div>
   );

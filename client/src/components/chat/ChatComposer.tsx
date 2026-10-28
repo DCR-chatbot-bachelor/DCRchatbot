@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { Send } from "lucide-react";
 
 interface ChatComposerProps {
   disabled: boolean;
@@ -46,7 +47,7 @@ export function ChatComposer({
         aria-label="Send besked"
         disabled={!message.trim() || disabled}
       >
-        {disabled ? "..." : "↑"}
+        <Send size={16} aria-hidden="true" />
       </button>
     </form>
   );

@@ -43,11 +43,14 @@ public class ChatSession
     /// </summary>
     public List<string>? PendingLabelsBeforeExecution { get; set; }
     public List<ChatMessage> History { get; set; } = new();
+    public List<ExecutedEvent> ExecutedEvents { get; set; } = new();
+    public List<ConversationCheckpoint> Checkpoints { get; set; } = new();
     public DateTime LastUpdatedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class ChatMessage
 {
+    public string? MessageId { get; set; }
     public string Sender { get; set; } = string.Empty; // "User" eller "Bot"
     public string Content { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;

@@ -1,6 +1,7 @@
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Dtos;
 using DcrChatbot.Core.Application.Llm;
+using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.Enums;
 using DcrChatbot.Core.Domain.ValueObjects;
@@ -27,6 +28,7 @@ public sealed class ChatServiceTests
             llmService.Object,
             sessionStore,
             Options.Create(new LlmOptions()),
+            new TurnTrace(),
             NullLogger<ChatService>.Instance);
     }
 
@@ -683,6 +685,22 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         dcrRepository.Verify(
             r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task ConfirmedInferredReply_ContainsNavigationMetadata()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18", new() { ["Country"] = "Denmark" });
+        var first = await service.SendMessageAsync(
+            session.SessionId,
+            new ChatRequest { MessageId = "message-1", Message = "Jeg er 18 og bor i Danmark" });
+
+        var next = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+        var inferred = await service.ConfirmDraftAsync(session.SessionId, next.PendingDraft!.Id);
+
+        Assert.True(inferred.ConfirmedAnswer!.IsAutoInferred);
+        Assert.Equal("message-1", inferred.ConfirmedAnswer.SourceMessageId);
     }
 
     [Fact]

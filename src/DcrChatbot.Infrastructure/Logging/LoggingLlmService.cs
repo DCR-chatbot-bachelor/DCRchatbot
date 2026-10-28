@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
@@ -9,6 +10,7 @@ namespace DcrChatbot.Infrastructure.Logging;
 
 public sealed class LoggingLlmService(
     ILlmService inner,
+    TurnTrace turn,
     ILogger<LoggingLlmService> logger) : ILlmService
 {
     public Task<(string? MatchedEventId, TokenUsageResult TokenUsage)> MatchEventAsync(
@@ -95,11 +97,34 @@ public sealed class LoggingLlmService(
                 usage.PromptTokens, usage.CompletionTokens,
                 usage.DurationMilliseconds, stopwatch.ElapsedMilliseconds,
                 targetOf(result), inferredEventIds, options.PromptVersion);
+
+            // FR-TEST-1: kaldet kommer også med på turens trace-linje.
+            turn.RecordLlmCall(new LlmCallTrace
+            {
+                Operation = operation,
+                Provider = options.Provider.ToString(),
+                ModelId = options.ActiveModelId,
+                PromptVersion = options.PromptVersion,
+                EventId = targetOf(result),
+                InferredEventIds = inferredEventIds.ToList(),
+                PromptTokens = usage.PromptTokens,
+                CompletionTokens = usage.CompletionTokens,
+                DurationMs = stopwatch.ElapsedMilliseconds
+            });
             return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             LogFailure(exception, operation, options, stopwatch.ElapsedMilliseconds);
+            turn.RecordLlmCall(new LlmCallTrace
+            {
+                Operation = operation,
+                Provider = options.Provider.ToString(),
+                ModelId = options.ActiveModelId,
+                PromptVersion = options.PromptVersion,
+                DurationMs = stopwatch.ElapsedMilliseconds,
+                Failed = true
+            });
             throw;
         }
     }

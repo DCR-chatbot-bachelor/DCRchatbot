@@ -49,6 +49,12 @@ public sealed class ChatController(IChatService chatService) : ControllerBase
         CancellationToken cancellationToken) =>
         Ok(await chatService.EditAnswerAsync(RequireSessionId(), request, cancellationToken));
 
+    [HttpPost("return")]
+    public async Task<ActionResult<ChatResponse>> ReturnToMessage(
+        [FromBody] ChatRequest request,
+        CancellationToken cancellationToken) =>
+        Ok(await chatService.ReturnToMessageAsync(RequireSessionId(), request, cancellationToken));
+
     private string RequireSessionId() =>
         Request.Headers.TryGetValue(SessionHeader, out var value) && !string.IsNullOrWhiteSpace(value)
             ? value.ToString()
