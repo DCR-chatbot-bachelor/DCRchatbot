@@ -60,6 +60,28 @@ Pop-Location
 The API uses the URL shown by ASP.NET Core, normally `http://localhost:5169`.
 The Vite client normally runs at `http://localhost:5173`.
 
+## Prompt versions
+
+All LLM prompts belong to one version, `PromptCatalog.Version` in
+`src/DcrChatbot.Core/Application/Llm/PromptCatalog.cs`: the interpretation
+prompts in `LlmIntentPrompt` and the dialogue prompts in `ModePrompts`. The
+version is written to the LLM log on every call, so a test result can always be
+traced back to the prompts that produced it.
+
+`Llm:PromptVersion` in `appsettings.json` must match that version; the API
+refuses to start otherwise.
+
+To change a prompt:
+
+1. Edit the prompt.
+2. Raise `PromptCatalog.Version` (for example `v1` → `v2`) and
+   `Llm:PromptVersion` in `appsettings.json`.
+3. Run the unit tests. `PromptSnapshotTests` fails and prints the new hash;
+   set `ExpectedVersion` and `ExpectedHash` in that test to the new values.
+
+The test fails whenever a prompt changes without a new version, so results
+recorded under one version always come from the same prompts.
+
 ## Session storage
 
 Chat sessions are persisted as JSON files below the API's `App_Data/sessions`

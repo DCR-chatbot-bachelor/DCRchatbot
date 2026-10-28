@@ -60,28 +60,19 @@ public sealed class LoggingLlmService(
             r => r.MatchResult.MatchedEventId,
             r => r.MatchResult.InferredReplies.Keys);
 
-    public async Task<string> GenerateTextAsync(
+    // GenerateText bruges af DcrGuided og LlmOnly; med token-forbrug og
+    // prompt-version kan alle tre tilstande sammenlignes på pris (NFR-4).
+    public Task<(string Text, TokenUsageResult TokenUsage)> GenerateTextAsync(
         string prompt,
         LlmOptions options,
-        CancellationToken cancellationToken = default)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        try
-        {
-            var text = await inner.GenerateTextAsync(prompt, options, cancellationToken);
-            logger.LogInformation(
-                "LLM {Operation} | {Provider} {ModelId} | tokens: ukendt | total: {TotalMs} ms",
-                "GenerateText", options.Provider, options.ActiveModelId, stopwatch.ElapsedMilliseconds);
-            return text;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            LogFailure(exception, "GenerateText", options, stopwatch.ElapsedMilliseconds);
-            throw;
-        }
-    }
+        CancellationToken cancellationToken = default) =>
+        TrackAsync(
+            "GenerateText", options,
+            () => inner.GenerateTextAsync(prompt, options, cancellationToken),
+            r => r.TokenUsage,
+            _ => null);
 
-    // Fælles for de fire metoder, der returnerer TokenUsageResult.
+    // Fælles for alle metoderne, som returnerer TokenUsageResult.
     // inferredOf: afledte svar (FR-DCR-2) kommer i samme kald som hovedsvaret,
     // så de logges på samme linje som ekstra event-id'er.
     private async Task<T> TrackAsync<T>(

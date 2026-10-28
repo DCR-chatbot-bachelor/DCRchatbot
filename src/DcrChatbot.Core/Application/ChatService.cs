@@ -119,7 +119,7 @@ public sealed class ChatService(
         var prompt = ModePrompts.RephraseAnswer(draft.UserMessage ?? question, question, officialAnswer);
         try
         {
-            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Text.Trim();
             return reply.Length > 0 ? reply : officialAnswer;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -142,7 +142,7 @@ public sealed class ChatService(
         try
         {
             var prompt = ModePrompts.GroundedAnswer(session.GraphKnowledge, message);
-            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Text.Trim();
             if (reply.Length > 0 && !reply.Contains(ModePrompts.UnknownAnswer, StringComparison.OrdinalIgnoreCase))
             {
                 session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
@@ -168,7 +168,7 @@ public sealed class ChatService(
             .TakeLast(LlmOnlyHistoryLength)
             .Select(m => (FromCitizen: m.Sender == "User", Text: m.Content));
         var prompt = ModePrompts.LlmOnly(session.GraphKnowledge ?? string.Empty, history, message);
-        var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+        var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Text.Trim();
 
         session.History.Add(new ChatMessage { Sender = "User", Content = message });
         session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });

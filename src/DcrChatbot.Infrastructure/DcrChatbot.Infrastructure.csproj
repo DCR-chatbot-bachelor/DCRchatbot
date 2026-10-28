@@ -5,6 +5,11 @@
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.7" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- PromptSnapshotTests tjekker de interne prompts (FR-LLM-1). -->
+    <InternalsVisibleTo Include="DcrChatbot.UnitTests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

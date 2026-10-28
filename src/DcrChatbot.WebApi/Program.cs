@@ -1,5 +1,6 @@
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Application;
+using DcrChatbot.Core.Application.Llm;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
@@ -46,6 +47,10 @@ builder.Services
     .Validate(
         options => options.HasApiKeyForProvider(),
         "API-nøglen for den valgte Llm:Provider mangler (Llm:ApiKey for Gemini, Llm:OpenAi:ApiKey for OpenAi).")
+    // FR-LLM-1: loggen må aldrig påstå en anden prompt-version end den, koden kører.
+    .Validate(
+        options => options.PromptVersion == PromptCatalog.Version,
+        $"Llm:PromptVersion skal være '{PromptCatalog.Version}', den prompt-version koden indeholder.")
     .ValidateOnStart();
 
 builder.Services
