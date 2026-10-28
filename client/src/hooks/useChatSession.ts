@@ -3,6 +3,7 @@ import {
   confirmChatDraft,
   editChatAnswer,
   rejectChatDraft,
+  returnToMessage,
   sendChatMessage,
   startChat,
 } from "../api/chatApi";
@@ -160,7 +161,7 @@ export function useChatSession() {
       return;
     }
     await run(
-      () => sendChatMessage({ sessionId, message, mode }),
+      () => sendChatMessage({ sessionId, messageId, message, mode }),
       "Beskeden kunne ikke sendes.",
     );
   }
@@ -178,6 +179,31 @@ export function useChatSession() {
 
   function cancelEditing() {
     setEditingAnswer(null);
+  }
+
+  async function returnTo(answer: AnsweredQuestion) {
+    if (!sessionId || !answer.sourceMessageId || isSending) return;
+    if (!window.confirm("Er du sikker på, at samtalen skal vende tilbage hertil?")) return;
+
+    setIsSending(true);
+    setError(null);
+    try {
+      const response = await returnToMessage(sessionId, answer.sourceMessageId);
+      setSessionId(response.sessionId);
+      setPendingDraft(response.pendingDraft ?? null);
+      setMessages((current) => {
+        const index = current.findIndex((message) => message.id === answer.sourceMessageId);
+        if (index < 0) return current;
+        const questionIndex = index > 0 && current[index - 1].sender === "bot"
+          ? index - 1
+          : index;
+        return [...current.slice(0, questionIndex), createMessage("bot", response.message)];
+      });
+    } catch (requestError) {
+      setError(`Samtalen kunne ikke gå tilbage. ${(requestError as Error).message}`);
+    } finally {
+      setIsSending(false);
+    }
   }
 
   // FR-HITL-1: kladden når først DCR, når borgeren aktivt bekræfter den.
@@ -210,6 +236,7 @@ export function useChatSession() {
     rejectDraft,
     startEditing,
     cancelEditing,
+    returnTo,
     selectQuickReply,
   };
 }

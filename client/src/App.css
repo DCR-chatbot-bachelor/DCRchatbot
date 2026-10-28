@@ -715,6 +715,32 @@
   cursor: default;
   opacity: 0.4;
 }
+.message__answer-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.message__return {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #237f67;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+.message__return:hover:not(:disabled) {
+  background: #f1f7f3;
+}
+.message__return:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
 .message--superseded .message__body p {
   text-decoration: line-through;
   opacity: 0.55;
