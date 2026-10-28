@@ -1,4 +1,5 @@
 import type { AnsweredQuestion, MessageAnswer, QuickReply } from "../../types/chat";
+import { Pencil } from "lucide-react";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -50,6 +51,17 @@ export function Message({
           {onEditAnswer &&
             editable.map(({ answer }) => (
               // FR-HITL-2: en lille blyant pr. svar, beskeden gav.
+              <button
+                key={answer.eventId}
+                type="button"
+                className={`message__edit ${editingEventId === answer.eventId ? "message__edit--active" : ""}`}
+                title={`Ret dit svar på "${answer.question}" (${answer.value})`}
+                aria-label={`Ret dit svar på ${answer.question}`}
+                disabled={disabled}
+                onClick={() => onEditAnswer(answer)}
+              >
+                <Pencil size={12} aria-hidden="true" />
+              </button>
               <span key={answer.eventId} className="message__answer-actions">
                 <button
                   type="button"
