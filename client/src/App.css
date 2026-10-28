@@ -357,11 +357,12 @@
   min-height: 420px;
   max-height: none;
   overflow-y: auto;
-  padding: 28px 32px 12px;
+  padding: 28px max(32px, calc((100% - 1120px) / 2)) 12px;
 }
 .chat-widget--fullscreen .chat-window__messages {
   width: 100%;
-  max-width: none;
+  max-width: 1120px;
+  margin: 0 auto;
   min-height: 0;
 }
 .chat-widget--fullscreen .chat-panel .chat-window__messages {
@@ -377,7 +378,8 @@
   position: static;
   flex: 0 0 auto;
   width: auto;
-  margin: 0 32px 4px;
+  width: min(1120px, calc(100% - 64px));
+  margin: 0 auto 4px;
   padding: 10px 0 0;
 }
 .chat-widget--fullscreen .composer textarea {
@@ -397,7 +399,7 @@
   font-size: 13px;
 }
 .chat-widget--fullscreen .draft-card {
-  width: min(100%, 1100px);
+  width: min(100%, 1120px);
   margin-right: auto;
   margin-left: auto;
 }
@@ -561,6 +563,10 @@
   font-size: 10px;
 }
 .button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
   padding: 9px 14px;
   border: 0;
   border-radius: 7px;
@@ -681,6 +687,20 @@
 .chat-panel .draft-card strong {
   font-size: 12px;
 }
+.draft-card__label,
+.draft-card__question {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.draft-card__question {
+  display: inline;
+  font-weight: 400;
+}
+.draft-card__actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 5px;
+}
 .chat-panel .draft-card__actions {
   flex-wrap: wrap;
 }
@@ -712,6 +732,32 @@
   background: #f1f7f3;
 }
 .message__edit:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.message__answer-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.message__return {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #237f67;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+.message__return:hover:not(:disabled) {
+  background: #f1f7f3;
+}
+.message__return:disabled {
   cursor: default;
   opacity: 0.4;
 }
@@ -797,6 +843,9 @@
   border: 0;
   border-radius: 7px;
 }
+.send-button svg {
+  margin: auto;
+}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -874,9 +923,73 @@
     padding: 15px 15px 12px;
   }
   .chat-widget--fullscreen .composer {
+    width: auto;
     margin: 0 15px 4px;
   }
   .message__body {
     max-width: 86%;
   }
+}
+
+/* Bekræft "gå tilbage": boksen dækker kun chatpanelet, ikke hele siden. */
+.chat-panel {
+  position: relative;
+}
+.return-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #163e3059;
+  animation: return-dialog-fade 120ms ease-out;
+}
+.return-dialog__card {
+  display: flex;
+  width: min(320px, 100%);
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  color: #163e30;
+  background: white;
+  border: 1px solid #dce9e1;
+  border-radius: 13px;
+  box-shadow: 0 16px 40px #163e3033;
+}
+.return-dialog__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #237f67;
+  background: #e8f3ee;
+  border-radius: 50%;
+}
+.return-dialog__card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.return-dialog__card p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #4b6359;
+}
+.return-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+@keyframes return-dialog-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.return-dialog__actions .button--secondary {
+  color: #237f67;
+  background: #e8f3ee;
+}
+.return-dialog__actions .button {
+  cursor: pointer;
 }

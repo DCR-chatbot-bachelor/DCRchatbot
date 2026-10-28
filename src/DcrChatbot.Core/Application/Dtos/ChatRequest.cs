@@ -7,6 +7,8 @@ public class ChatRequest
     public string? GraphId { get; set; }
     public string? SessionId { get; set; }
     public string Message { get; set; } = string.Empty;
+    public string? MessageId { get; set; }
+    public string? ReturnToMessageId { get; set; }
     public ExecutionMode Mode { get; set; } = ExecutionMode.DcrStrict;
 
     /// <summary>

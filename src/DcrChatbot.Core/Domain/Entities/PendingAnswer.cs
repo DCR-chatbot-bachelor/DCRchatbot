@@ -21,6 +21,7 @@ public class PendingAnswer
     /// </summary>
     public string? PreviousValue { get; set; }
     public string? Explanation { get; set; }
+    public string? SourceMessageId { get; set; }
     public bool IsConfirmed { get; set; }
     public bool IsAutoInferred { get; set; }
     public bool IsEventMatch { get; set; }
