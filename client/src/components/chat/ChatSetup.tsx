@@ -29,7 +29,7 @@ const MODES: { mode: ExecutionMode; label: string; description: string }[] = [
   {
     mode: "LlmOnly",
     label: "Kun AI",
-    description: "AI'en svarer frit ud fra grafens FAQ, uden DCR.",
+    description: "AI'en vælger og formulerer svaret alene ud fra grafens FAQ-tekst, uden DCR.",
   },
 ];
 

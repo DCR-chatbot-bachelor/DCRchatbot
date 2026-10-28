@@ -6,9 +6,6 @@ namespace DcrChatbot.Core.Application.Llm;
 /// </summary>
 public static class ModePrompts
 {
-    /// <summary>Svaret, en grounded-prompt giver, når grafens viden ikke dækker spørgsmålet.</summary>
-    public const string UnknownAnswer = "UKENDT";
-
     /// <summary>
     /// Den faste sætning, LlmOnly skal svare med, når grafens viden ikke
     /// dækker spørgsmålet (regel 2), så et korrekt afslag kan tælles automatisk.
@@ -23,6 +20,10 @@ public static class ModePrompts
     //   3. formularens spørgsmål i orden → sprungne eller ombyttede felter
     //   4. kun grafens valgmuligheder   → accepterede ugyldige svar
     //   5. grafens afslutning/afbrydelse → korrekt afsluttede formularer
+    //   6. rettelser bekræftes          → rettelser, der blev overset
+    // Regel 4 og 6 svarer til, hvad DCR-tilstandene klarer automatisk (LLM'en
+    // oversætter "gym" til et valg, og en rettelse går gennem en kladde), så
+    // baseline ikke fejler på noget, de andre ikke kan fejle på.
     public static string LlmOnly(string knowledge, IEnumerable<(bool FromCitizen, string Text)> history, string message) =>
         $"""
         You are the assistant for citizens who contact a public authority about
@@ -39,11 +40,15 @@ public static class ModePrompts
         3. Start a form described in the knowledge only when the citizen wants
            it. Ask its questions one at a time, in the order listed, and do not
            skip any.
-        4. If a form question lists choices, accept only one of those choices.
+        4. If a form question lists choices, the answer must be one of those
+           choices. If the citizen's answer clearly means one of them (for
+           example an abbreviation or another spelling), use that choice.
            Otherwise ask the question again.
         5. When all questions of a form are answered, reply with the text the
            knowledge gives for that. If the citizen wants to stop the form,
            reply with the text the knowledge gives for stopping.
+        6. If the citizen corrects an earlier answer, confirm the new answer
+           before you continue.
 
         Knowledge:
         {knowledge}
@@ -72,20 +77,6 @@ public static class ModePrompts
         in it. Focus on what the citizen asked about and keep it short. If the
         official answer does not cover exactly what they asked, give its most
         relevant part.
-        """;
-
-    // DcrGuided: en besked, der ikke matcher et emne, må besvares ud fra
-    // grafens viden, men kun hvis svaret står der.
-    public static string GroundedAnswer(string knowledge, string message) =>
-        $"""
-        Knowledge:
-        {knowledge}
-
-        Citizen message: "{message}"
-
-        If the knowledge answers the message, reply to the citizen in Danish
-        using only information from the knowledge, and keep it short. If the
-        knowledge does not answer it, reply with exactly: {UnknownAnswer}
         """;
 
     private static string FormatHistory(IEnumerable<(bool FromCitizen, string Text)> history)

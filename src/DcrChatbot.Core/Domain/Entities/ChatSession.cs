@@ -13,7 +13,7 @@ public class ChatSession
 
     /// <summary>
     /// Grafens FAQ og formularer som tekst, bygget ved samtalens start. Bruges
-    /// af LlmOnly og DcrGuided, så LLM'en har samme viden som grafen (FR-TEST-1).
+    /// kun af LlmOnly, så LLM'en har samme viden som grafen (FR-TEST-1).
     /// </summary>
     public string? GraphKnowledge { get; set; }
 

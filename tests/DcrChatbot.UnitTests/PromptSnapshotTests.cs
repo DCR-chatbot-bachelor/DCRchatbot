@@ -15,8 +15,8 @@ namespace DcrChatbot.UnitTests;
 public sealed class PromptSnapshotTests
 {
     // Hashen af alle prompts i PromptCatalog.Version.
-    private const string ExpectedVersion = "v2";
-    private const string ExpectedHash = "5F71958047C47E74";
+    private const string ExpectedVersion = "v3";
+    private const string ExpectedHash = "EDE790D292C03877";
 
     [Fact]
     public void Prompts_MatchTheirVersion()
@@ -47,8 +47,7 @@ public sealed class PromptSnapshotTests
             LlmIntentPrompt.BuildValuePrompt("besked", question, [other]),
             LlmIntentPrompt.BuildConfirmationPrompt("besked", draft),
             ModePrompts.LlmOnly("viden", [(true, "hej"), (false, "svar")], "besked"),
-            ModePrompts.RephraseAnswer("besked", "Spørgsmål?", "Officielt svar."),
-            ModePrompts.GroundedAnswer("viden", "besked")
+            ModePrompts.RephraseAnswer("besked", "Spørgsmål?", "Officielt svar.")
         };
 
         var text = string.Join("\n---\n", prompts).Replace("\r\n", "\n");
