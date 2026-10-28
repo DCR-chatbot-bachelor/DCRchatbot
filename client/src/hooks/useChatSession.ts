@@ -77,6 +77,8 @@ export function useChatSession() {
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingAnswer, setEditingAnswer] = useState<AnsweredQuestion | null>(null);
+  // Svaret, borgeren vil gå tilbage til, mens bekræftelsesboksen er åben.
+  const [returnTarget, setReturnTarget] = useState<AnsweredQuestion | null>(null);
   // Beskeden, kladderne i køen kom fra; bekræftede svar knyttes til den.
   const draftSourceMessageId = useRef<string | null>(null);
 
@@ -181,9 +183,20 @@ export function useChatSession() {
     setEditingAnswer(null);
   }
 
-  async function returnTo(answer: AnsweredQuestion) {
+  // Første klik på ↩ åbner kun bekræftelsesboksen i chatpanelet.
+  function requestReturnTo(answer: AnsweredQuestion) {
     if (!sessionId || !answer.sourceMessageId || isSending) return;
-    if (!window.confirm("Er du sikker på, at samtalen skal vende tilbage hertil?")) return;
+    setReturnTarget(answer);
+  }
+
+  function cancelReturn() {
+    setReturnTarget(null);
+  }
+
+  async function confirmReturn() {
+    const answer = returnTarget;
+    setReturnTarget(null);
+    if (!sessionId || !answer?.sourceMessageId || isSending) return;
 
     setIsSending(true);
     setError(null);
@@ -236,7 +249,10 @@ export function useChatSession() {
     rejectDraft,
     startEditing,
     cancelEditing,
-    returnTo,
+    returnTarget,
+    requestReturnTo,
+    confirmReturn,
+    cancelReturn,
     selectQuickReply,
   };
 }

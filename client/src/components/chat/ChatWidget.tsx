@@ -7,6 +7,7 @@ import { ChatPanelHeader } from "./ChatPanelHeader";
 import { ChatSetup } from "./ChatSetup";
 import { ChatWindow } from "./ChatWindow";
 import { EditAnswerBanner } from "./EditAnswerBanner";
+import { ReturnConfirmDialog } from "./ReturnConfirmDialog";
 
 interface ChatWidgetProps {
   isOpen: boolean;
@@ -65,7 +66,7 @@ export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
                 onConfirmDraft={chat.confirmDraft}
                 onRejectDraft={chat.rejectDraft}
                 onEditAnswer={chat.startEditing}
-                onReturnTo={chat.returnTo}
+                onReturnTo={chat.requestReturnTo}
                 onSelectQuickReply={chat.selectQuickReply}
               />
               {chat.editingAnswer && (
@@ -86,6 +87,13 @@ export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
                 onSend={chat.sendMessage}
               />
             </>
+          )}
+          {chat.returnTarget && (
+            <ReturnConfirmDialog
+              answer={chat.returnTarget}
+              onConfirm={chat.confirmReturn}
+              onCancel={chat.cancelReturn}
+            />
           )}
         </section>
       )}

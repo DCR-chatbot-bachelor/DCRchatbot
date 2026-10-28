@@ -1,5 +1,6 @@
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Application;
+using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
 using DcrChatbot.Infrastructure.LlmProviders;
@@ -19,6 +20,10 @@ Serilog.Debugging.SelfLog.Enable(Console.Error);
 // NFR-4: LLM-kald logges til konsol og til en JSON Lines-fil, der kan analyseres bagefter.
 var logPath = Path.Combine(builder.Environment.ContentRootPath, "logs", "llm-calls-.jsonl");
 Console.WriteLine($"LLM log: {logPath}");
+
+// FR-TEST-1: én trace-linje pr. besked (input, event, validering, svar, mode, tokens).
+var traceDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs", "traces");
+Console.WriteLine($"Trace log: {traceDirectory}");
 
 builder.Host.UseSerilog((context, services, config) => config
     .MinimumLevel.Information()
@@ -58,7 +63,16 @@ builder.Services.AddCors(options => options.AddPolicy("Client", policy =>
         .AllowAnyMethod()));
 
 builder.Services.AddSingleton<ISessionStore, JsonFileSessionStore>();
-builder.Services.AddScoped<IChatService, ChatService>();
+builder.Services.AddSingleton<ITraceStore>(new JsonLinesTraceStore(traceDirectory));
+builder.Services.AddScoped<TurnTrace>();
+builder.Services.AddScoped<ChatService>();
+
+// Decorator: controlleren får TracingChatService, som skriver turen til trace-loggen.
+builder.Services.AddScoped<IChatService>(sp => new TracingChatService(
+    sp.GetRequiredService<ChatService>(),
+    sp.GetRequiredService<TurnTrace>(),
+    sp.GetRequiredService<ITraceStore>(),
+    sp.GetRequiredService<ILogger<TracingChatService>>()));
 builder.Services.AddHttpClient<IDcrRepository, DcrRepositoryClient>((serviceProvider, client) =>
 {
     var dcrOptions = serviceProvider
@@ -96,6 +110,7 @@ builder.Services.AddTransient<ILlmService>(sp => new LoggingLlmService(
     llmProvider == LlmProvider.OpenAi
         ? sp.GetRequiredService<OpenAiLlmService>()
         : sp.GetRequiredService<GeminiLlmService>(),
+    sp.GetRequiredService<TurnTrace>(),
     sp.GetRequiredService<ILogger<LoggingLlmService>>()));
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
