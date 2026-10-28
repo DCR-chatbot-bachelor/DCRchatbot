@@ -1384,30 +1384,19 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
-    public async Task DcrGuided_NoMatch_AnswersFromTheGraphsKnowledge_WhenItCoversTheQuestion()
+    public async Task DcrGuided_NoMatch_ShowsTheGraphsTopics_WithoutLettingTheLlmAnswer()
     {
+        // Et svar, DCR ikke har valgt, kunne fx "starte" en formular, som
+        // DCR ikke kender; så ville borgerens næste svar ikke blive forstået.
         var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
         SetupLlmMatch(null!, null);
-        SetupGeneratedText(_ => "I minSU kan du følge med i din SU.");
 
-        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvor kan jeg se min SU?" });
-
-        Assert.Equal("I minSU kan du følge med i din SU.", response.Message);
-        Assert.Empty(response.Suggestions);
-        dcrRepository.Verify(r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task DcrGuided_NoMatch_ShowsTheTopics_WhenTheKnowledgeDoesNotCoverIt()
-    {
-        var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
-        SetupLlmMatch(null!, null);
-        SetupGeneratedText(_ => ModePrompts.UnknownAnswer);
-
-        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvad er vejret i dag?" });
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "kan du hjælpe mig med at søge om su?" });
 
         Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
         Assert.Equal(["minSU"], response.Suggestions.Select(s => s.EventId));
+        llmService.Verify(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+        dcrRepository.Verify(r => r.GetGraphDefinitionAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.

@@ -9,5 +9,7 @@ namespace DcrChatbot.Core.Application.Llm;
 public static class PromptCatalog
 {
     // v2: LlmOnly fik faste regler i stedet for frie tøjler.
-    public const string Version = "v2";
+    // v3: LlmOnly oversætter tydelige svar til et valg og bekræfter rettelser;
+    //     DcrGuided har ikke længere en prompt til beskeder uden emne.
+    public const string Version = "v3";
 }

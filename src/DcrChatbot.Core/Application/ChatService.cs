@@ -38,15 +38,13 @@ public sealed class ChatService(
     {
         var graphId = RequireValue(request.GraphId, "GraphId er påkrævet ved start af en samtale.");
 
-        // FR-TEST-1: LlmOnly og DcrGuided får grafens viden som tekst. Den
-        // læses fra grafens definition, så intet udføres for at bygge den.
-        var knowledge = request.Mode is ExecutionMode.LlmOnly or ExecutionMode.DcrGuided
-            ? GraphKnowledgeBuilder.Build(await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken))
-            : null;
-
-        // LlmOnly har ingen DCR-kobling: ingen simulation og ingen tilstand.
+        // FR-TEST-1: LlmOnly har ingen DCR-kobling, kun grafens viden som
+        // tekst. Den læses fra grafens definition, så intet udføres for at
+        // bygge den, og der oprettes ingen simulation.
         if (request.Mode == ExecutionMode.LlmOnly)
         {
+            var knowledge = GraphKnowledgeBuilder.Build(
+                await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken));
             var llmOnlySession = new ChatSession { GraphId = graphId, Mode = request.Mode, GraphKnowledge = knowledge };
             await sessionStore.SaveSessionAsync(llmOnlySession, cancellationToken);
             return ToResponse(llmOnlySession, LlmOnlyConversation.Greeting);
@@ -59,8 +57,7 @@ public sealed class ChatService(
             GraphId = graphId,
             Mode = request.Mode,
             SimulationId = simulationId,
-            CurrentGraphState = state,
-            GraphKnowledge = knowledge
+            CurrentGraphState = state
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -284,9 +281,11 @@ public sealed class ChatService(
             if (topic is null)
             {
                 // Fx "hvad kan jeg få hjælp til?" eller noget, grafen ikke
-                // dækker: vis grafens emner i stedet for blot at afvise.
+                // dækker: vis grafens emner i stedet for blot at afvise. Også
+                // i DcrGuided: et svar, DCR ikke har valgt, kunne føre
+                // samtalen ud på et sidespor, som grafen ikke kender.
                 trace.RecordOutcome("no_match");
-                return await AnswerUnmatchedAsync(session, message, cancellationToken);
+                return HelpResponse(session);
             }
 
             // En event-match beskæftiger sig kun med spørgsmålet. For choice-
@@ -450,19 +449,6 @@ public sealed class ChatService(
         return string.IsNullOrWhiteSpace(matchedEventId)
             ? null
             : topics.FirstOrDefault(e => string.Equals(e.Id, matchedEventId, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private async Task<ChatResponse> AnswerUnmatchedAsync(
-        ChatSession session, string message, CancellationToken cancellationToken)
-    {
-        var reply = await RepliesFor(session).AnswerUnmatchedAsync(session, message, cancellationToken);
-        if (reply is null)
-        {
-            return HelpResponse(session);
-        }
-
-        session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
-        return ToResponse(session, reply);
     }
 
     // ---- Kladde bekræftet eller afvist ----
