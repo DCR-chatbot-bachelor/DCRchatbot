@@ -10,6 +10,7 @@ public static class PromptCatalog
 {
     // v2: LlmOnly fik faste regler i stedet for frie tøjler.
     // v3: LlmOnly oversætter tydelige svar til et valg og bekræfter rettelser;
-    //     DcrGuided har ikke længere en prompt til beskeder uden emne.
+    //     DcrGuided har ikke længere en prompt til beskeder uden emne; æøå
+    //     i events skrives som de er i stedet for som escape-koder.
     public const string Version = "v3";
 }

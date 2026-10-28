@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DcrChatbot.Core.Application.DcrEngine;
@@ -20,6 +21,16 @@ internal static class LlmIntentPrompt
         PropertyNameCaseInsensitive = true,
         Converters = { new LenientStringConverter() }
     };
+
+    // æ, ø og å skrives som de er. Med standardindstillingen bliver "hjælp"
+    // til en escape-kode (æ for æ), og modellen gengiver id'et forkert
+    // (fx "hj\0E6lp"), så et korrekt match aldrig findes i grafen.
+    private static readonly JsonSerializerOptions PromptJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private static string ToPromptJson<T>(T value) => JsonSerializer.Serialize(value, PromptJsonOptions);
 
     // Til fri tekst (GenerateTextAsync): instruktionerne står i selve
     // prompten, så systemprompten nævner hverken DCR eller events.
@@ -52,7 +63,7 @@ internal static class LlmIntentPrompt
             {userMessage}
 
             Available events:
-            {JsonSerializer.Serialize(events)}
+            {ToPromptJson(events)}
 
             Match the user's message to the best available event and extract
             only the value for that event. For example, if the user says
@@ -84,7 +95,7 @@ internal static class LlmIntentPrompt
             {userMessage}
 
             Available events:
-            {JsonSerializer.Serialize(events)}
+            {ToPromptJson(events)}
 
             Identify which available event the user is talking about.
             Do not extract or infer any value from the message.
@@ -110,10 +121,10 @@ internal static class LlmIntentPrompt
             {userMessage}
 
             Event:
-            {JsonSerializer.Serialize(DescribeEvent(matchedEvent))}
+            {ToPromptJson(DescribeEvent(matchedEvent))}
 
             Other open events:
-            {JsonSerializer.Serialize(otherOpenEvents.Select(DescribeEvent))}
+            {ToPromptJson(otherOpenEvents.Select(DescribeEvent))}
 
             Extract only the value that answers this event. For example,
             "Jeg er 18 år" for an integer event returns "18".
@@ -177,7 +188,7 @@ internal static class LlmIntentPrompt
             {userMessage}
 
             Pending confirmation:
-            {JsonSerializer.Serialize(new
+            {ToPromptJson(new
             {
                 question = draft.Question,
                 proposedValue = draft.ProposedValue

@@ -16,7 +16,7 @@ public sealed class PromptSnapshotTests
 {
     // Hashen af alle prompts i PromptCatalog.Version.
     private const string ExpectedVersion = "v3";
-    private const string ExpectedHash = "5BB6C21AB998AE64";
+    private const string ExpectedHash = "EDE790D292C03877";
 
     [Fact]
     public void Prompts_MatchTheirVersion()
