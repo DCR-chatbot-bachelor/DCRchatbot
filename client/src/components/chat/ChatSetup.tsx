@@ -14,7 +14,26 @@ interface ChatSetupProps {
   onStart: () => void;
 }
 
-/** Valg af DCR-graf og tilstand (Baseline/NeuroSymbolic, FR-TEST-1) før samtalen startes. */
+// FR-TEST-1: de tre tilstande, fra "DCR styrer alt" til "LLM'en styrer alt".
+const MODES: { mode: ExecutionMode; label: string; description: string }[] = [
+  {
+    mode: "DcrStrict",
+    label: "DCR-styret",
+    description: "DCR vælger svaret, og teksten vises ordret fra grafen.",
+  },
+  {
+    mode: "DcrGuided",
+    label: "DCR-guidet",
+    description: "DCR vælger svaret; AI'en formulerer det ud fra grafens tekst.",
+  },
+  {
+    mode: "LlmOnly",
+    label: "Kun AI",
+    description: "AI'en svarer frit ud fra grafens FAQ, uden DCR.",
+  },
+];
+
+/** Valg af DCR-graf og tilstand (FR-TEST-1) før samtalen startes. */
 export function ChatSetup({
   graphs,
   selectedGraphId,
@@ -58,24 +77,17 @@ export function ChatSetup({
         <legend className="field-label">
           {isFullscreen ? "Tilstand" : "Demo mode"}
         </legend>
-        <label>
-          <input
-            type="radio"
-            name="mode"
-            checked={mode === "NeuroSymbolic"}
-            onChange={() => onModeChange("NeuroSymbolic")}
-          />
-          <span>Neuro-symbolsk</span>
-        </label>
-        <label>
-          <input
-            type="radio"
-            name="mode"
-            checked={mode === "Baseline"}
-            onChange={() => onModeChange("Baseline")}
-          />
-          <span>Baseline</span>
-        </label>
+        {MODES.map((option) => (
+          <label key={option.mode} title={option.description}>
+            <input
+              type="radio"
+              name="mode"
+              checked={mode === option.mode}
+              onChange={() => onModeChange(option.mode)}
+            />
+            <span>{option.label}</span>
+          </label>
+        ))}
       </fieldset>
       <button
         type="button"

@@ -17,6 +17,14 @@ public interface IDcrRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Henter grafens struktur (events og relationer) uden at oprette en
+    /// simulation. Bruges til at give en LLM grafens viden som tekst (FR-TEST-1).
+    /// </summary>
+    Task<DcrGraphDefinition> GetGraphDefinitionAsync(
+        string graphId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Henter de grafer, som den konfigurerede DCR.Repo-bruger har adgang til.
     /// </summary>
     Task<IReadOnlyList<DcrGraph>> GetGraphsAsync(

@@ -9,7 +9,7 @@ public class ChatRequest
     public string Message { get; set; } = string.Empty;
     public string? MessageId { get; set; }
     public string? ReturnToMessageId { get; set; }
-    public ExecutionMode Mode { get; set; } = ExecutionMode.NeuroSymbolic;
+    public ExecutionMode Mode { get; set; } = ExecutionMode.DcrStrict;
 
     /// <summary>
     /// Håndterer to-faset bekræftelse / rettelse jf. FR-HITL-1 og FR-HITL-2.

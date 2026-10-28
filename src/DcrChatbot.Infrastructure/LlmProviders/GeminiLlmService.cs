@@ -34,7 +34,7 @@ public sealed class GeminiLlmService : ILlmService
         ValidateOptions(options);
 
         var prompt = LlmIntentPrompt.BuildMatchEventPrompt(userMessage, availableEvents);
-        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
         return (LlmIntentPrompt.ParseMatchedEventId(text, "Gemini"), usage);
     }
 
@@ -51,7 +51,7 @@ public sealed class GeminiLlmService : ILlmService
         ValidateOptions(options);
 
         var prompt = LlmIntentPrompt.BuildValuePrompt(userMessage, matchedEvent, otherOpenEvents);
-        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
         return (LlmIntentPrompt.ParseValueResult(text, "Gemini"), usage);
     }
 
@@ -66,7 +66,7 @@ public sealed class GeminiLlmService : ILlmService
         ValidateOptions(options);
 
         var prompt = LlmIntentPrompt.BuildConfirmationPrompt(userMessage, draft);
-        var (text, usage) = await SendPromptAsync(prompt, options, cancellationToken);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
         return (LlmIntentPrompt.ParseConfirmation(text, "Gemini"), usage);
     }
 
@@ -84,6 +84,7 @@ public sealed class GeminiLlmService : ILlmService
         var (text, usage) = await SendPromptAsync(
             prompt,
             options,
+            jsonResponse: true,
             cancellationToken);
         var result = LlmIntentPrompt.DeserializeMatchResult(text, "Gemini");
         return (result, usage);
@@ -97,13 +98,14 @@ public sealed class GeminiLlmService : ILlmService
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
         ValidateOptions(options);
 
-        var (text, _) = await SendPromptAsync(prompt, options, cancellationToken);
+        var (text, _) = await SendPromptAsync(prompt, options, jsonResponse: false, cancellationToken);
         return text;
     }
 
     private async Task<(string Text, TokenUsageResult Usage)> SendPromptAsync(
         string prompt,
         LlmOptions options,
+        bool jsonResponse,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -112,7 +114,13 @@ public sealed class GeminiLlmService : ILlmService
         {
             SystemInstruction = new GeminiContent
             {
-                Parts = [new GeminiPart { Text = LlmIntentPrompt.BuildSystemPrompt(options) }]
+                Parts =
+                [
+                    new GeminiPart
+                    {
+                        Text = jsonResponse ? LlmIntentPrompt.BuildSystemPrompt(options) : LlmIntentPrompt.TextSystemPrompt
+                    }
+                ]
             },
             Contents =
             [
@@ -126,7 +134,7 @@ public sealed class GeminiLlmService : ILlmService
             {
                 Temperature = options.Temperature,
                 MaxOutputTokens = options.MaxOutputTokens,
-                ResponseMimeType = "application/json"
+                ResponseMimeType = jsonResponse ? "application/json" : "text/plain"
             }
         };
 

@@ -71,7 +71,7 @@ function attachAnswer(
  */
 export function useChatSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<ExecutionMode>("NeuroSymbolic");
+  const [mode, setMode] = useState<ExecutionMode>("DcrStrict");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingDraft, setPendingDraft] = useState<PendingAnswer | null>(null);
   const [isSending, setIsSending] = useState(false);

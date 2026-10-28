@@ -1,7 +1,9 @@
 using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Application.Dtos;
+using DcrChatbot.Core.Application.Llm;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
+using DcrChatbot.Core.Domain.Enums;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
 using Microsoft.Extensions.Logging;
@@ -24,6 +26,21 @@ public sealed class ChatService(
         CancellationToken cancellationToken = default)
     {
         var graphId = RequireValue(request.GraphId, "GraphId er påkrævet ved start af en samtale.");
+
+        // FR-TEST-1: LlmOnly og DcrGuided får grafens viden som tekst. Den
+        // læses fra grafens definition, så intet udføres for at bygge den.
+        var knowledge = request.Mode is ExecutionMode.LlmOnly or ExecutionMode.DcrGuided
+            ? GraphKnowledgeBuilder.Build(await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken))
+            : null;
+
+        // LlmOnly har ingen DCR-kobling: ingen simulation og ingen tilstand.
+        if (request.Mode == ExecutionMode.LlmOnly)
+        {
+            var llmOnlySession = new ChatSession { GraphId = graphId, Mode = request.Mode, GraphKnowledge = knowledge };
+            await sessionStore.SaveSessionAsync(llmOnlySession, cancellationToken);
+            return ToResponse(llmOnlySession, "Hej! Hvad kan jeg hjælpe dig med?");
+        }
+
         var simulationId = await dcrRepository.CreateSimulationAsync(graphId, cancellationToken);
         var state = await dcrRepository.GetGraphStateAsync(graphId, simulationId, cancellationToken);
         var session = new ChatSession
@@ -31,7 +48,8 @@ public sealed class ChatService(
             GraphId = graphId,
             Mode = request.Mode,
             SimulationId = simulationId,
-            CurrentGraphState = state
+            CurrentGraphState = state,
+            GraphKnowledge = knowledge
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -64,6 +82,11 @@ public sealed class ChatService(
             using var scope = BeginSessionScope(session);
             trace.Attach(session);
 
+            if (session.Mode == ExecutionMode.LlmOnly)
+            {
+                return await ReplyWithLlmOnlyAsync(session, message, cancellationToken);
+            }
+
             session.History.Add(new ChatMessage { MessageId = request.MessageId, Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
@@ -85,6 +108,72 @@ public sealed class ChatService(
 
             return await CreateDraftAsync(session, message, request.MessageId, cancellationToken);
         }, cancellationToken);
+    }
+
+    // DcrGuided: svar-teksten fra grafen formuleres af LLM'en, kun ud fra den
+    // tekst. Fejler kaldet, vises grafens tekst ordret som i DcrStrict.
+    private async Task<string> RephraseAnswerAsync(
+        PendingAnswer draft, string officialAnswer, CancellationToken cancellationToken)
+    {
+        var question = draft.Question ?? draft.EventId;
+        var prompt = ModePrompts.RephraseAnswer(draft.UserMessage ?? question, question, officialAnswer);
+        try
+        {
+            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+            return reply.Length > 0 ? reply : officialAnswer;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Kunne ikke formulere svaret; grafens tekst vises ordret.");
+            return officialAnswer;
+        }
+    }
+
+    // DcrGuided: en besked uden emne må besvares ud fra grafens viden, men
+    // kun hvis svaret står der. Ellers, og i DcrStrict, vises grafens emner.
+    private async Task<ChatResponse> HelpOrGroundedAnswerAsync(
+        ChatSession session, string message, CancellationToken cancellationToken)
+    {
+        if (session.Mode != ExecutionMode.DcrGuided || string.IsNullOrWhiteSpace(session.GraphKnowledge))
+        {
+            return HelpResponse(session);
+        }
+
+        try
+        {
+            var prompt = ModePrompts.GroundedAnswer(session.GraphKnowledge, message);
+            var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+            if (reply.Length > 0 && !reply.Contains(ModePrompts.UnknownAnswer, StringComparison.OrdinalIgnoreCase))
+            {
+                session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+                return ToResponse(session, reply);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Kunne ikke svare ud fra grafens viden; viser grafens emner.");
+        }
+
+        return HelpResponse(session);
+    }
+
+    private const int LlmOnlyHistoryLength = 20;
+
+    // LlmOnly (baseline): LLM'en svarer frit ud fra grafens viden og
+    // samtalen. Intet valideres, bekræftes eller udføres i DCR.
+    private async Task<ChatResponse> ReplyWithLlmOnlyAsync(
+        ChatSession session, string message, CancellationToken cancellationToken)
+    {
+        var history = session.History
+            .TakeLast(LlmOnlyHistoryLength)
+            .Select(m => (FromCitizen: m.Sender == "User", Text: m.Content));
+        var prompt = ModePrompts.LlmOnly(session.GraphKnowledge ?? string.Empty, history, message);
+        var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Trim();
+
+        session.History.Add(new ChatMessage { Sender = "User", Content = message });
+        session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+        trace.RecordOutcome("llm_only_reply");
+        return ToResponse(session, reply);
     }
 
     public Task<ChatResponse> ConfirmDraftAsync(
@@ -390,6 +479,14 @@ public sealed class ChatService(
         var hasQueuedDrafts = session.PendingAnswersQueue.Count > 0;
         var nextPendingEvent = hasQueuedDrafts ? null : GetNextAnswerablePendingEvent(session.CurrentGraphState);
         var replyParts = answers.Select(GetAnswerText).ToList();
+
+        // DcrGuided: DCR har valgt svaret; LLM'en formulerer det ud fra
+        // grafens tekst og borgerens spørgsmål.
+        if (session.Mode == ExecutionMode.DcrGuided && draft.IsEventMatch && replyParts.Count > 0)
+        {
+            replyParts = [await RephraseAnswerAsync(draft, string.Join("\n\n", replyParts), cancellationToken)];
+        }
+
         if (nextPendingEvent is not null)
         {
             replyParts.Add(nextPendingEvent.Label);
@@ -644,7 +741,7 @@ public sealed class ChatService(
                 // Fx "hvad kan jeg få hjælp til?" eller noget, grafen ikke
                 // dækker: vis grafens emner i stedet for blot at afvise.
                 trace.RecordOutcome("no_match");
-                return HelpResponse(session);
+                return await HelpOrGroundedAnswerAsync(session, message, cancellationToken);
             }
 
             // En event-match beskæftiger sig kun med spørgsmålet. For choice-
@@ -683,7 +780,8 @@ public sealed class ChatService(
                     ProposedValue = value,
                     SourceMessageId = messageId,
                     IsAutoInferred = false,
-                    IsEventMatch = isEventMatch
+                    IsEventMatch = isEventMatch,
+                    UserMessage = message
                 });
             }
             else if (inferredDrafts.Count == 0)

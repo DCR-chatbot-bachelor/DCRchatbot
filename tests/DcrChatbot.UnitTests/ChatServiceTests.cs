@@ -1,7 +1,9 @@
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Dtos;
+using DcrChatbot.Core.Application.Llm;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
+using DcrChatbot.Core.Domain.Enums;
 using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
@@ -1260,6 +1262,152 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         var response = await service.ConfirmDraftAsync(session.SessionId, again.PendingDraft!.Id);
 
         Assert.Equal("Det har du allerede været igennem. Du kan rette dine svar med blyanten ✎ ved dem.", response.Message);
+    }
+
+    // --- FR-TEST-1: de tre tilstande -------------------------------------
+
+    private static readonly DcrGraphDefinition MinSuDefinition = new()
+    {
+        Events =
+        [
+            new() { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", Options = [new() { Label = "ja", Value = "ja" }] },
+            new() { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label" }
+        ],
+        Relations = [new() { Type = "response", SourceId = "minSU", TargetId = "A2Copy" }]
+    };
+
+    // SU-grafen med ét FAQ-emne: minSU gør sit svar pending, når det udføres.
+    private async Task<ChatResponse> StartMinSuAsync(ExecutionMode mode)
+    {
+        var executed = new HashSet<string>();
+        GraphState State() => new()
+        {
+            Events =
+            [
+                new DcrEvent { Id = "minSU", Label = "Hvorfor skal jeg bruge minSU?", DataType = "choice", IsEnabled = true, Included = true, ChoiceValues = "ja (ja), nej (nej)", IsExecuted = executed.Contains("minSU") ? true : null },
+                new DcrEvent { Id = "A2Copy", Label = "På minSU kan du følge med i din SU.", DataType = "label", IsEnabled = true, Included = true, IsPending = executed.Contains("minSU") && !executed.Contains("A2Copy") }
+            ]
+        };
+        dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("sim-1");
+        dcrRepository.Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>())).ReturnsAsync(State);
+        dcrRepository.Setup(r => r.GetGraphDefinitionAsync("graph-1", It.IsAny<CancellationToken>())).ReturnsAsync(MinSuDefinition);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) => executed.Add(id))
+            .ReturnsAsync(true);
+
+        return await service.StartAsync(new ChatRequest { GraphId = "graph-1", Mode = mode });
+    }
+
+    private void SetupGeneratedText(Func<string, string> reply) =>
+        llmService
+            .Setup(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string prompt, LlmOptions _, CancellationToken _) => reply(prompt));
+
+    [Fact]
+    public async Task SameQuestion_DcrStrict_ShowsTheGraphsAnswerVerbatim_WithoutGeneratingText()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.DcrStrict);
+        SetupLlmMatch("minSU", null);
+
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "Hvorfor skal jeg bruge minSU?" });
+        var answer = await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("På minSU kan du følge med i din SU.", answer.Message);
+        llmService.Verify(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+        dcrRepository.Verify(r => r.GetGraphDefinitionAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SameQuestion_DcrGuided_DcrChoosesTheAnswer_AndTheLlmPhrasesItFromThatText()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
+        SetupLlmMatch("minSU", null);
+        string? rephrasePrompt = null;
+        SetupGeneratedText(prompt => { rephrasePrompt = prompt; return "Du bruger minSU til at følge din SU."; });
+
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvad skal jeg med minsu" });
+        var answer = await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Du bruger minSU til at følge din SU.", answer.Message);
+        Assert.Contains("hvad skal jeg med minsu", rephrasePrompt);
+        Assert.Contains("På minSU kan du følge med i din SU.", rephrasePrompt);
+        // DCR har stadig udført emnet og svaret, præcis som i DcrStrict.
+        dcrRepository.Verify(r => r.ExecuteEventAsync("graph-1", "sim-1", "minSU", "ja", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SameQuestion_LlmOnly_AnswersFromTheGraphsFaqText_WithoutAnyDcrSimulation()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.LlmOnly);
+        string? prompt = null;
+        SetupGeneratedText(p => { prompt = p; return "På minSU kan du følge din SU."; });
+
+        var answer = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "Hvorfor skal jeg bruge minSU?" });
+
+        Assert.Equal("Hej! Hvad kan jeg hjælpe dig med?", start.Message);
+        Assert.Equal("På minSU kan du følge din SU.", answer.Message);
+        Assert.Null(answer.PendingDraft);
+        Assert.Contains("Spørgsmål: Hvorfor skal jeg bruge minSU?", prompt);
+        Assert.Contains("Svar: På minSU kan du følge med i din SU.", prompt);
+        dcrRepository.Verify(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        dcrRepository.Verify(r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        llmService.Verify(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task LlmOnly_SendsTheConversationSoFar_WithEachMessage()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.LlmOnly);
+        string? prompt = null;
+        SetupGeneratedText(p => { prompt = p; return "Svar."; });
+
+        await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "Første spørgsmål" });
+        await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "Andet spørgsmål" });
+
+        Assert.Contains("Borger: Første spørgsmål\nAssistent: Svar.\nBorger: Andet spørgsmål", prompt!.Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    public async Task DcrGuided_WhenPhrasingFails_ShowsTheGraphsTextVerbatim()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
+        SetupLlmMatch("minSU", null);
+        llmService
+            .Setup(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("LLM nede"));
+
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "minsu?" });
+        var answer = await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("På minSU kan du følge med i din SU.", answer.Message);
+    }
+
+    [Fact]
+    public async Task DcrGuided_NoMatch_AnswersFromTheGraphsKnowledge_WhenItCoversTheQuestion()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
+        SetupLlmMatch(null!, null);
+        SetupGeneratedText(_ => "I minSU kan du følge med i din SU.");
+
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvor kan jeg se min SU?" });
+
+        Assert.Equal("I minSU kan du følge med i din SU.", response.Message);
+        Assert.Empty(response.Suggestions);
+        dcrRepository.Verify(r => r.ExecuteEventAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DcrGuided_NoMatch_ShowsTheTopics_WhenTheKnowledgeDoesNotCoverIt()
+    {
+        var start = await StartMinSuAsync(ExecutionMode.DcrGuided);
+        SetupLlmMatch(null!, null);
+        SetupGeneratedText(_ => ModePrompts.UnknownAnswer);
+
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvad er vejret i dag?" });
+
+        Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
+        Assert.Equal(["minSU"], response.Suggestions.Select(s => s.EventId));
     }
 
     // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.

@@ -21,6 +21,11 @@ internal static class LlmIntentPrompt
         Converters = { new LenientStringConverter() }
     };
 
+    // Til fri tekst (GenerateTextAsync): instruktionerne står i selve
+    // prompten, så systemprompten nævner hverken DCR eller events.
+    public const string TextSystemPrompt =
+        "Follow the instructions in the user message exactly. Answer in plain text, not JSON.";
+
     public static string BuildSystemPrompt(LlmOptions options) =>
         string.IsNullOrWhiteSpace(options.SystemPrompt)
             ? "You map user messages to available DCR events. Never invent event IDs."
