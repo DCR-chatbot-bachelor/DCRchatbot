@@ -90,6 +90,17 @@ export async function editChatAnswer(
   })
 }
 
+export async function returnToMessage(
+  sessionId: string,
+  messageId: string,
+): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/chat/return', {
+    method: 'POST',
+    headers: { 'X-Session-Id': sessionId },
+    body: JSON.stringify({ returnToMessageId: messageId }),
+  })
+}
+
 export async function reviseChatDraft(
   chatRequest: ChatRequest,
 ): Promise<ChatResponse> {

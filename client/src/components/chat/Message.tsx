@@ -9,6 +9,7 @@ interface MessageProps {
   editingEventId?: string | null;
   disabled?: boolean;
   onEditAnswer?: (answer: AnsweredQuestion) => void;
+  onReturnTo?: (answer: AnsweredQuestion) => void;
   /** Kun sat på den seneste bot-besked, så gamle knapper ikke kan vælges. */
   quickReplies?: QuickReply[];
   onSelectQuickReply?: (reply: QuickReply) => void;
@@ -22,6 +23,7 @@ export function Message({
   editingEventId = null,
   disabled = false,
   onEditAnswer,
+  onReturnTo,
   quickReplies = [],
   onSelectQuickReply,
 }: MessageProps) {
@@ -60,6 +62,30 @@ export function Message({
               >
                 <Pencil size={12} aria-hidden="true" />
               </button>
+              <span key={answer.eventId} className="message__answer-actions">
+                <button
+                  type="button"
+                  className={`message__edit ${editingEventId === answer.eventId ? "message__edit--active" : ""}`}
+                  title={`Ret dit svar på "${answer.question}" (${answer.value})`}
+                  aria-label={`Ret dit svar på ${answer.question}`}
+                  disabled={disabled}
+                  onClick={() => onEditAnswer(answer)}
+                >
+                  ✎
+                </button>
+                {(answer.isAutoInferred || answer.sourceMessageId) && onReturnTo && (
+                  <button
+                    type="button"
+                    className="message__return"
+                    title="Vend tilbage hertil"
+                    aria-label="Vend tilbage hertil"
+                    disabled={disabled}
+                    onClick={() => onReturnTo(answer)}
+                  >
+                      ↩
+                  </button>
+                )}
+              </span>
             ))}
           <p>{content}</p>
         </div>
