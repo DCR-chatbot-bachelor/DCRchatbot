@@ -15,8 +15,8 @@ namespace DcrChatbot.UnitTests;
 public sealed class PromptSnapshotTests
 {
     // Hashen af alle prompts i PromptCatalog.Version.
-    private const string ExpectedVersion = "v1";
-    private const string ExpectedHash = "F8AC3F5E00CF4278";
+    private const string ExpectedVersion = "v2";
+    private const string ExpectedHash = "5F71958047C47E74";
 
     [Fact]
     public void Prompts_MatchTheirVersion()

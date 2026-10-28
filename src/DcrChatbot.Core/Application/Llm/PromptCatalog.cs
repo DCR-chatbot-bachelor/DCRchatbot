@@ -8,5 +8,6 @@ namespace DcrChatbot.Core.Application.Llm;
 /// </summary>
 public static class PromptCatalog
 {
-    public const string Version = "v1";
+    // v2: LlmOnly fik faste regler i stedet for frie tøjler.
+    public const string Version = "v2";
 }
