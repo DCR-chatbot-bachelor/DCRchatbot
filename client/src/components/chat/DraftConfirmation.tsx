@@ -1,4 +1,5 @@
 import type { PendingAnswer } from "../../types/chat";
+import { Check, X } from "lucide-react";
 
 interface DraftConfirmationProps {
   draft: PendingAnswer;
@@ -21,14 +22,14 @@ export function DraftConfirmation({
           {draft.isEventMatch ? (
             <>
               <span className="draft-card__label">
-                Jeg forstod, at din besked handler om  
+                Jeg forstod, at din besked handler om
                </span>
-              <strong> {draft.question}</strong>
+              <em className="draft-card__question">&quot;{draft.question}&quot;</em>
             </>
           ) : draft.previousValue != null ? (
             <>
               <span className="draft-card__label">Vil du ændre dit svar på</span>
-              <strong>{draft.question}</strong>
+              <em className="draft-card__question">&quot;{draft.question}&quot;</em>
               <p>
                 Fra <strong>{draft.previousValue}</strong> til{" "}
                 <strong>{draft.proposedValue}</strong>
@@ -37,7 +38,7 @@ export function DraftConfirmation({
           ) : (
             <>
               <span className="draft-card__label">Svarer du på </span>
-              <strong>{draft.question}</strong>
+              <em className="draft-card__question">&quot;{draft.question}&quot;</em>
               <p>
                 Dit svar: <strong>{draft.proposedValue}</strong>
               </p>
@@ -58,7 +59,8 @@ export function DraftConfirmation({
           disabled={disabled}
           onClick={onConfirm}
         >
-          Ja
+          <Check size={14} aria-hidden="true" />
+          <span>Ja</span>
         </button>
         <button
           type="button"
@@ -66,7 +68,8 @@ export function DraftConfirmation({
           disabled={disabled}
           onClick={onReject}
         >
-          Nej
+          <X size={14} aria-hidden="true" />
+          <span>Nej</span>
         </button>
       </div>
     </div>

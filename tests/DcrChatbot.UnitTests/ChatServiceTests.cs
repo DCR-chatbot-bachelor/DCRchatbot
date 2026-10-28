@@ -686,6 +686,22 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     }
 
     [Fact]
+    public async Task ConfirmedInferredReply_ContainsNavigationMetadata()
+    {
+        var (session, _) = await StartFormSessionAsync();
+        SetupValueExtraction("18", new() { ["Country"] = "Denmark" });
+        var first = await service.SendMessageAsync(
+            session.SessionId,
+            new ChatRequest { MessageId = "message-1", Message = "Jeg er 18 og bor i Danmark" });
+
+        var next = await service.ConfirmDraftAsync(session.SessionId, first.PendingDraft!.Id);
+        var inferred = await service.ConfirmDraftAsync(session.SessionId, next.PendingDraft!.Id);
+
+        Assert.True(inferred.ConfirmedAnswer!.IsAutoInferred);
+        Assert.Equal("message-1", inferred.ConfirmedAnswer.SourceMessageId);
+    }
+
+    [Fact]
     public async Task ConfirmDraft_ReturnsTheConfirmedAnswer_SoItCanBeEdited()
     {
         var (session, _) = await StartFormSessionAsync();

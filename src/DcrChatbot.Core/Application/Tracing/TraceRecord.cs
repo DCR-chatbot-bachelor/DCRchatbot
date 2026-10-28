@@ -13,7 +13,7 @@ public sealed class TraceRecord
     public string? GraphId { get; set; }
     public ExecutionMode? Mode { get; set; }
 
-    /// <summary>start, message, confirm, reject, revise eller edit.</summary>
+    /// <summary>start, message, confirm, reject, revise, edit eller return.</summary>
     public string Action { get; set; } = string.Empty;
 
     /// <summary>Borgerens tekst. Tom ved start/confirm/reject via knap.</summary>

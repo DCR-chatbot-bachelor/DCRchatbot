@@ -64,7 +64,7 @@ public sealed class ChatService(
             using var scope = BeginSessionScope(session);
             trace.Attach(session);
 
-            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+            session.History.Add(new ChatMessage { MessageId = request.MessageId, Sender = "User", Content = message });
             if (session.PendingAnswersQueue.Count > 0)
             {
                 var answerResult = await llmService.ClassifyConfirmationAsync(
@@ -83,7 +83,7 @@ public sealed class ChatService(
                     session, session.PendingAnswersQueue[0], answer.Value, cancellationToken);
             }
 
-            return await CreateDraftAsync(session, message, cancellationToken);
+            return await CreateDraftAsync(session, message, request.MessageId, cancellationToken);
         }, cancellationToken);
     }
 
@@ -118,7 +118,7 @@ public sealed class ChatService(
 
             session.PendingAnswersQueue.Remove(existingDraft);
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
-            return await CreateDraftAsync(session, message, cancellationToken);
+            return await CreateDraftAsync(session, message, null, cancellationToken);
         }, cancellationToken);
     }
 
@@ -191,6 +191,55 @@ public sealed class ChatService(
             return ToResponse(
                 session,
                 $"Vil du ændre dit svar på '{dcrEvent.Label}' fra '{previousValue}' til '{value}'?");
+        }, cancellationToken);
+    }
+
+    public async Task<ChatResponse> ReturnToMessageAsync(
+        string sessionId,
+        ChatRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var messageId = RequireValue(request.ReturnToMessageId, "MessageId er påkrævet for at gå tilbage.");
+        return await sessionStore.ExecuteAsync(sessionId, async session =>
+        {
+            using var scope = BeginSessionScope(session);
+            trace.Attach(session);
+            var checkpoint = session.Checkpoints.FirstOrDefault(c => c.MessageId == messageId);
+            if (checkpoint is null)
+            {
+                throw new ChatConflictException("Denne besked kan ikke længere bruges som tilbagegangspunkt.");
+            }
+
+            var simulationId = await dcrRepository.CreateSimulationAsync(session.GraphId, cancellationToken);
+            foreach (var executedEvent in checkpoint.ExecutedEvents)
+            {
+                await dcrRepository.ExecuteEventAsync(
+                    session.GraphId, simulationId, executedEvent.EventId, executedEvent.Value, cancellationToken);
+            }
+
+            session.SimulationId = simulationId;
+            session.CurrentGraphState = await dcrRepository.GetGraphStateAsync(
+                session.GraphId, simulationId, cancellationToken);
+            session.ExecutedEvents = checkpoint.ExecutedEvents
+                .Select(e => new ExecutedEvent { EventId = e.EventId, Value = e.Value })
+                .ToList();
+            session.PendingAnswersQueue.Clear();
+            session.ParkedAnswers.Clear();
+            session.AnswerLabelsToExecute.Clear();
+            session.PendingLabelsBeforeExecution = null;
+            session.IsGraphStateStale = false;
+            var checkpointIndex = session.Checkpoints.IndexOf(checkpoint);
+            session.Checkpoints = session.Checkpoints.Take(checkpointIndex).ToList();
+            session.History = session.History
+                .TakeWhile(history => history.MessageId != messageId)
+                .Concat(session.History.Where(history => history.MessageId == messageId).Take(1))
+                .ToList();
+
+            var nextQuestion = GetNextAnswerablePendingEvent(session.CurrentGraphState);
+            var responseText = nextQuestion?.Label ?? "Okay, vi er gået tilbage hertil.";
+            trace.RecordOutcome("returned_to_message");
+            session.History.Add(new ChatMessage { Sender = "Bot", Content = responseText });
+            return ToResponse(session, responseText);
         }, cancellationToken);
     }
 
@@ -307,6 +356,7 @@ public sealed class ChatService(
         {
             await dcrRepository.ExecuteEventAsync(
                 session.GraphId, simulationId, draft.EventId, draft.ProposedValue, cancellationToken);
+            RecordExecutedEvent(session, draft.EventId, draft.ProposedValue);
         }
         catch
         {
@@ -422,7 +472,9 @@ public sealed class ChatService(
             {
                 EventId = draft.EventId,
                 Question = draft.Question ?? draft.EventId,
-                Value = draft.ProposedValue
+                Value = draft.ProposedValue,
+                IsAutoInferred = draft.IsAutoInferred,
+                SourceMessageId = draft.SourceMessageId
             };
         return ToResponse(session, reply, confirmedAnswer);
     }
@@ -485,13 +537,20 @@ public sealed class ChatService(
         {
             await dcrRepository.ExecuteEventAsync(
                 session.GraphId, simulationId, labelId, string.Empty, cancellationToken);
+            RecordExecutedEvent(session, labelId, string.Empty);
             session.AnswerLabelsToExecute.Remove(labelId);
             await sessionStore.SaveSessionAsync(session, cancellationToken);
         }
     }
 
+    private static void RecordExecutedEvent(ChatSession session, string eventId, string value)
+    {
+        session.ExecutedEvents.RemoveAll(e => string.Equals(e.EventId, eventId, StringComparison.OrdinalIgnoreCase));
+        session.ExecutedEvents.Add(new ExecutedEvent { EventId = eventId, Value = value });
+    }
+
     private async Task<ChatResponse> CreateDraftAsync(
-        ChatSession session, string message, CancellationToken cancellationToken)
+        ChatSession session, string message, string? messageId, CancellationToken cancellationToken)
     {
         await EnsureFreshStateAsync(session, cancellationToken);
 
@@ -511,6 +570,18 @@ public sealed class ChatService(
         List<PendingAnswer> inferredDrafts = [];
         if (pendingEvent is not null)
         {
+            if (!string.IsNullOrWhiteSpace(messageId) &&
+                session.Checkpoints.All(c => c.MessageId != messageId))
+            {
+                session.Checkpoints.Add(new ConversationCheckpoint
+                {
+                    MessageId = messageId,
+                    ExecutedEvents = session.ExecutedEvents
+                        .Select(e => new ExecutedEvent { EventId = e.EventId, Value = e.Value })
+                        .ToList()
+                });
+            }
+
             matchedEvent = pendingEvent;
 
             // Et tryk på en svar-knap sender præcis et af grafens valg; det
@@ -548,7 +619,7 @@ public sealed class ChatService(
                 }
 
                 inferredDrafts = BuildInferredDrafts(
-                    session, extracted.InferredReplies, otherOpenEvents, pendingEvent.Id, trace);
+                    session, extracted.InferredReplies, otherOpenEvents, pendingEvent.Id, messageId, trace);
 
                 // Er beskeden hverken et svar eller et afledt svar, kan den
                 // handle om et af grafens emner, fx "jeg vil ikke ansøge
@@ -610,6 +681,7 @@ public sealed class ChatService(
                     EventId = matchedEvent.Id,
                     Question = matchedEvent.Label,
                     ProposedValue = value,
+                    SourceMessageId = messageId,
                     IsAutoInferred = false,
                     IsEventMatch = isEventMatch
                 });
@@ -658,6 +730,7 @@ public sealed class ChatService(
         IReadOnlyDictionary<string, string> inferredReplies,
         IReadOnlyList<DcrEvent> openEvents,
         string primaryEventId,
+        string? sourceMessageId,
         TurnTrace trace)
     {
         var replies = new Dictionary<string, string>(inferredReplies, StringComparer.OrdinalIgnoreCase);
@@ -687,6 +760,7 @@ public sealed class ChatService(
                 EventId = dcrEvent.Id,
                 Question = dcrEvent.Label,
                 ProposedValue = value,
+                SourceMessageId = sourceMessageId,
                 IsAutoInferred = true
             });
         }

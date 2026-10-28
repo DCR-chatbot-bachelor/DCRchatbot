@@ -9,4 +9,6 @@ public class AnsweredQuestion
     public string EventId { get; set; } = string.Empty;
     public string Question { get; set; } = string.Empty;
     public string Value { get; set; } = string.Empty;
+    public bool IsAutoInferred { get; set; }
+    public string? SourceMessageId { get; set; }
 }

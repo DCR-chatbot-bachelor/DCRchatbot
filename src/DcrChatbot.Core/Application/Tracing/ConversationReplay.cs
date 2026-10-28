@@ -18,6 +18,7 @@ public static class ConversationReplay
                 {
                     "confirm" => "[Bekræftede svaret]",
                     "reject" => "[Afviste svaret]",
+                    "return" => "[Gik tilbage til en tidligere besked]",
                     _ => null
                 };
             if (userText is not null)

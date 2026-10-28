@@ -1,3 +1,5 @@
+import { Maximize2, Minimize2, Sparkles, X } from "lucide-react";
+
 interface ChatPanelHeaderProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -12,7 +14,9 @@ export function ChatPanelHeader({
   return (
     <div className="chat-panel__header">
       <div className="chat-agent">
-        <span className="chat-agent__avatar">✦</span>
+        <span className="chat-agent__avatar">
+          <Sparkles size={17} strokeWidth={2.2} aria-hidden="true" />
+        </span>
         <div>
           <strong>DCR-assistenten</strong>
           <span>
@@ -30,7 +34,11 @@ export function ChatPanelHeader({
           title={isFullscreen ? "Forlad fuldskærm" : "Fuldskærm"}
           onClick={onToggleFullscreen}
         >
-          {isFullscreen ? "↙" : "↗"}
+          {isFullscreen ? (
+            <Minimize2 size={16} aria-hidden="true" />
+          ) : (
+            <Maximize2 size={16} aria-hidden="true" />
+          )}
         </button>
         <button
           className="chat-close"
@@ -38,7 +46,7 @@ export function ChatPanelHeader({
           aria-label="Luk chatbot"
           onClick={onClose}
         >
-          ×
+          <X size={19} aria-hidden="true" />
         </button>
       </div>
     </div>

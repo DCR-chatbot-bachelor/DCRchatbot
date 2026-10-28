@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MessageCircle } from "lucide-react";
 import type {
   AnsweredQuestion,
   ChatMessage,
@@ -16,6 +17,7 @@ interface ChatWindowProps {
   onConfirmDraft: () => void;
   onRejectDraft: () => void;
   onEditAnswer: (answer: AnsweredQuestion) => void;
+  onReturnTo: (answer: AnsweredQuestion) => void;
   onSelectQuickReply: (reply: QuickReply) => void;
 }
 
@@ -27,6 +29,7 @@ export function ChatWindow({
   onConfirmDraft,
   onRejectDraft,
   onEditAnswer,
+  onReturnTo,
   onSelectQuickReply,
 }: ChatWindowProps) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -47,7 +50,7 @@ export function ChatWindow({
           {messages.length === 0 && (
             <div className="chat-window__empty">
               <span className="chat-window__empty-icon" aria-hidden="true">
-                ✦
+                <MessageCircle size={18} />
               </span>
               <h2>Start en samtale</h2>
               <p>
@@ -65,6 +68,7 @@ export function ChatWindow({
               editingEventId={editingEventId}
               disabled={disabled}
               onEditAnswer={onEditAnswer}
+              onReturnTo={onReturnTo}
               quickReplies={
                 canSelectQuickReplies && message.id === lastMessageId
                   ? message.quickReplies

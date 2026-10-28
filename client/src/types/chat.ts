@@ -27,6 +27,8 @@ export interface AnsweredQuestion {
   eventId: string
   question: string
   value: string
+  isAutoInferred?: boolean
+  sourceMessageId?: string | null
 }
 
 export interface ChatMessage {
@@ -77,6 +79,7 @@ export interface PendingAnswer {
 
 export interface ChatRequest {
   sessionId?: string | null
+  messageId?: string | null
   message: string
   mode: ExecutionMode
   action?: 'confirm' | 'reject' | 'revise' | null

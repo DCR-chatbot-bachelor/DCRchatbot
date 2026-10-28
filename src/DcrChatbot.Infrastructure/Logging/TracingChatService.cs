@@ -45,6 +45,11 @@ public sealed class TracingChatService(
         TraceAsync("edit", sessionId, request.Message,
             () => inner.EditAnswerAsync(sessionId, request, cancellationToken));
 
+    public Task<ChatResponse> ReturnToMessageAsync(
+        string sessionId, ChatRequest request, CancellationToken cancellationToken = default) =>
+        TraceAsync("return", sessionId, null,
+            () => inner.ReturnToMessageAsync(sessionId, request, cancellationToken));
+
     private async Task<ChatResponse> TraceAsync(
         string action, string? sessionId, string? input, Func<Task<ChatResponse>> call)
     {

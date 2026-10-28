@@ -65,6 +65,7 @@ export function ChatWidget({ isOpen, onOpenChange }: ChatWidgetProps) {
                 onConfirmDraft={chat.confirmDraft}
                 onRejectDraft={chat.rejectDraft}
                 onEditAnswer={chat.startEditing}
+                onReturnTo={chat.returnTo}
                 onSelectQuickReply={chat.selectQuickReply}
               />
               {chat.editingAnswer && (
