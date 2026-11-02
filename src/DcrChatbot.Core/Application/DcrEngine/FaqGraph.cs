@@ -28,12 +28,14 @@ public static class FaqGraph
     // emner, så de kan stilles igen.
     public static List<DcrEvent> GetTopicEvents(GraphState? state) =>
         state?.EnabledEvents
-            .Where(e =>
-                IsCitizenQuestion(e) &&
-                string.Equals(e.DataType, "choice", StringComparison.OrdinalIgnoreCase) &&
-                EventValidator.GetChoiceValues(e).Any(ChoiceYesWords.Contains))
+            .Where(IsTopic)
             .OrderBy(e => e.Sequence)
             .ToList() ?? [];
+
+    private static bool IsTopic(DcrEvent dcrEvent) =>
+        IsCitizenQuestion(dcrEvent) &&
+        string.Equals(dcrEvent.DataType, "choice", StringComparison.OrdinalIgnoreCase) &&
+        EventValidator.GetChoiceValues(dcrEvent).Any(ChoiceYesWords.Contains);
 
     public static string? GetYesValue(DcrEvent dcrEvent)
     {
@@ -41,16 +43,36 @@ public static class FaqGraph
         return values.FirstOrDefault(v => ChoiceYesWords.Contains(v)) ?? values.FirstOrDefault();
     }
 
-    public static DcrEvent? GetNextAnswerablePendingEvent(GraphState? state) =>
-        state?.GetPendingEvents().FirstOrDefault(IsCitizenQuestion);
+    // Det spørgsmål, botten stiller nu. Anbefalede emner er pending, men de
+    // er forslag til borgeren, ikke spørgsmål, botten venter svar på.
+    public static DcrEvent? GetNextAnswerablePendingEvent(
+        GraphState? state, IReadOnlyCollection<string> recommendedTopicIds) =>
+        state?.GetPendingEvents().FirstOrDefault(e =>
+            IsCitizenQuestion(e) && !recommendedTopicIds.Contains(e.Id, StringComparer.OrdinalIgnoreCase));
 
     // Alle spørgsmål, grafen venter på svar på, også dem der først bliver
     // enabled, når et tidligere felt er udfyldt (condition-relationer).
-    public static List<DcrEvent> GetOpenQuestions(GraphState? state) =>
+    public static List<DcrEvent> GetOpenQuestions(GraphState? state, IReadOnlyCollection<string> recommendedTopicIds) =>
         state?.Events
-            .Where(e => e.Included && e.IsPending && e.IsExecuted != true && IsCitizenQuestion(e))
+            .Where(e => e.Included && e.IsPending && e.IsExecuted != true && IsCitizenQuestion(e) &&
+                        !recommendedTopicIds.Contains(e.Id, StringComparer.OrdinalIgnoreCase))
             .OrderBy(e => e.Sequence)
             .ToList() ?? [];
+
+    // Emner, borgeren allerede kunne vælge, og som ikke er pending: kun de
+    // kan blive anbefalinger (se FindRecommendedTopics).
+    public static List<string> GetAvailableTopicIds(GraphState? state) =>
+        GetTopicEvents(state).Where(e => !e.IsPending).Select(e => e.Id).ToList();
+
+    // Et emne, grafen gør pending via en response-relation (fx fra svaret om
+    // "første gang" til "hjælp til at søge SU"), er grafens anbefaling af,
+    // hvad borgeren kan spørge om bagefter. Det skal have været et
+    // tilgængeligt emne i forvejen: et ja/nej-spørgsmål i en formular bliver
+    // included og pending på én gang, og det er et spørgsmål, botten stiller.
+    public static List<DcrEvent> FindRecommendedTopics(GraphState? state, IReadOnlyCollection<string> availableTopicIdsBefore) =>
+        GetTopicEvents(state)
+            .Where(e => e.IsPending && availableTopicIdsBefore.Contains(e.Id, StringComparer.OrdinalIgnoreCase))
+            .ToList();
 
     // Borgeren har udfyldt formularfelter: udførte spørgsmål, der ikke er emner.
     public static bool HasFormAnswers(GraphState? state)

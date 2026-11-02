@@ -66,7 +66,7 @@ public sealed class ChatService(
 
         // En formular starter med sit første spørgsmål; en FAQ-graf har intet
         // spørgsmål at stille, så den viser i stedet de emner, den dækker.
-        var pendingEvent = FaqGraph.GetNextAnswerablePendingEvent(state);
+        var pendingEvent = FaqGraph.GetNextAnswerablePendingEvent(state, session.RecommendedTopicIds);
         if (pendingEvent is not null)
         {
             return ToResponse(session, pendingEvent.Label);
@@ -239,7 +239,7 @@ public sealed class ChatService(
                 .Concat(session.History.Where(history => history.MessageId == messageId).Take(1))
                 .ToList();
 
-            var nextQuestion = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState);
+            var nextQuestion = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
             var responseText = nextQuestion?.Label ?? "Okay, vi er gået tilbage hertil.";
             trace.RecordOutcome("returned_to_message");
             session.History.Add(new ChatMessage { Sender = "Bot", Content = responseText });
@@ -261,7 +261,7 @@ public sealed class ChatService(
 
         // Har botten stillet et spørgsmål, er beskeden et svar på det; ellers
         // matches den til et af grafens emner.
-        var pendingEvent = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var pendingEvent = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
         var candidates = FaqGraph.GetTopicEvents(session.CurrentGraphState);
         if (pendingEvent is null && candidates.Count == 0)
         {
@@ -376,7 +376,7 @@ public sealed class ChatService(
         // FR-DCR-2: de andre åbne spørgsmål sendes med, så borgeren kan
         // besvare flere af dem i samme besked; også dem, der kun venter
         // på et tidligere felt (fx adresse, mens navn spørges).
-        var otherOpenEvents = FaqGraph.GetOpenQuestions(session.CurrentGraphState)
+        var otherOpenEvents = FaqGraph.GetOpenQuestions(session.CurrentGraphState, session.RecommendedTopicIds)
             .Where(e => !string.Equals(e.Id, pendingEvent.Id, StringComparison.OrdinalIgnoreCase))
             .ToList();
         var (extracted, _) = await llmService.ExtractValueAsync(
@@ -459,7 +459,8 @@ public sealed class ChatService(
         List<string> PendingLabels,
         Dictionary<string, DcrEvent> AnswersInEffect,
         List<string> OpenQuestions,
-        bool WasExecuted);
+        bool WasExecuted,
+        List<string> AvailableTopics);
 
     private async Task<ChatResponse> ResolveDraftAsync(
         string sessionId,
@@ -503,7 +504,7 @@ public sealed class ChatService(
 
         // Et afvist svar i et formularforløb: stil det spørgsmål igen,
         // botten stadig mangler svar på, frem for at bede om en ny formulering.
-        var openQuestion = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var openQuestion = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
         var rejected = session.PendingAnswersQueue.Count > 0
             ? "Okay, det svar springer jeg over."
             : draft.PreviousValue is not null
@@ -529,6 +530,10 @@ public sealed class ChatService(
 
         var answers = FaqGraph.FindNewAnswers(session.CurrentGraphState, before.PendingLabels);
         session.PendingLabelsBeforeExecution = null;
+
+        // Et emne, som det bekræftede emne gør pending, er en anbefaling og
+        // må ikke stilles som næste spørgsmål.
+        var recommendations = RecordRecommendations(session, before);
         var droppedDrafts = DraftQueue.DropQueuedDraftsThatNoLongerApply(session);
 
         // FR-HITL-2: en rettelse bekræftes med de konsekvenser, den fik.
@@ -539,7 +544,7 @@ public sealed class ChatService(
         // Er der flere kladder i køen (FR-DCR-2), vises den næste i stedet
         // for et nyt spørgsmål eller en konklusion.
         var hasQueuedDrafts = session.PendingAnswersQueue.Count > 0;
-        var nextPendingEvent = hasQueuedDrafts ? null : FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var nextPendingEvent = hasQueuedDrafts ? null : FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
         var replyParts = answers.Select(FaqGraph.GetAnswerText).ToList();
 
         // DCR har valgt svaret; tilstanden afgør, hvordan det formuleres.
@@ -566,12 +571,27 @@ public sealed class ChatService(
         var resultLabels = isFinished ? FaqGraph.FindResultLabels(session.CurrentGraphState) : [];
         await ExecuteAnswerLabelsAsync(session, simulationId, answers.Concat(resultLabels), cancellationToken);
 
+        // Et svar-label kan også anbefale et emne (fx svaret om "første gang"
+        // → "hjælp til at søge SU"); det ses først, når svaret er udført.
+        recommendations.AddRange(RecordRecommendations(session, before)
+            .Where(topic => recommendations.All(r => r.Id != topic.Id)));
+
         if (isFinished)
         {
             var conclusionText = ConclusionBuilder.Build(session.CurrentGraphState).ToText();
             replyParts.Add(conclusionText.Length > 0
                 ? conclusionText
                 : "Tak for dine svar. Forløbet er nu afsluttet.");
+        }
+
+        // Anbefalingerne vises kun, når botten ikke venter på et svar; ellers
+        // ville borgeren få både et spørgsmål og forslag til noget andet.
+        var suggestions = hasQueuedDrafts || nextPendingEvent is not null
+            ? []
+            : recommendations.Select(ToSuggestion).ToList();
+        if (suggestions.Count > 0)
+        {
+            replyParts.Add("Jeg kan også hjælpe dig med:");
         }
 
         var reply = string.Join("\n\n", revisionParts.Concat(replyParts));
@@ -591,7 +611,18 @@ public sealed class ChatService(
                 IsAutoInferred = draft.IsAutoInferred,
                 SourceMessageId = draft.SourceMessageId
             };
-        return ToResponse(session, reply, confirmedAnswer);
+        return ToResponse(session, reply, confirmedAnswer, suggestions);
+    }
+
+    // Emner, grafen har gjort pending siden før udførslen, huskes som
+    // anbefalinger, så de aldrig stilles som spørgsmål (se FaqGraph).
+    private static List<DcrEvent> RecordRecommendations(ChatSession session, StateBeforeExecution before)
+    {
+        var recommended = FaqGraph.FindRecommendedTopics(session.CurrentGraphState, before.AvailableTopics);
+        session.RecommendedTopicIds.AddRange(recommended
+            .Select(e => e.Id)
+            .Where(id => !session.RecommendedTopicIds.Contains(id, StringComparer.OrdinalIgnoreCase)));
+        return recommended;
     }
 
     // Udfører kladden i DCR og henter grafens nye tilstand. Returnerer
@@ -613,8 +644,9 @@ public sealed class ChatService(
         var before = new StateBeforeExecution(
             FaqGraph.GetPendingLabels(state).Select(e => e.Id).ToList(),
             FaqGraph.GetAnswersInEffect(state),
-            FaqGraph.GetOpenQuestions(state).Select(e => e.Id).ToList(),
-            state?.GetEvent(draft.EventId)?.IsExecuted == true);
+            FaqGraph.GetOpenQuestions(state, session.RecommendedTopicIds).Select(e => e.Id).ToList(),
+            state?.GetEvent(draft.EventId)?.IsExecuted == true,
+            FaqGraph.GetAvailableTopicIds(state));
         session.PendingLabelsBeforeExecution = before.PendingLabels;
         draft.ExecutionStatus = "Executing";
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -649,7 +681,7 @@ public sealed class ChatService(
     // også mangler grafen bare et svar.
     private static string DescribeTopicWithoutAnswer(ChatSession session, StateBeforeExecution before)
     {
-        var openQuestionsAfter = FaqGraph.GetOpenQuestions(session.CurrentGraphState).Select(e => e.Id).ToList();
+        var openQuestionsAfter = FaqGraph.GetOpenQuestions(session.CurrentGraphState, session.RecommendedTopicIds).Select(e => e.Id).ToList();
         var stoppedQuestions = before.OpenQuestions.Except(openQuestionsAfter).Any();
         return stoppedQuestions
             ? "Okay, så stopper vi der."

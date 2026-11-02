@@ -25,6 +25,13 @@ public class ChatSession
     public List<PendingAnswer> ParkedAnswers { get; set; } = new();
 
     /// <summary>
+    /// Emner, grafen har anbefalet ved at gøre dem pending (fx "hjælp til at
+    /// søge SU" efter svaret om første gang). De vises som forslag og stilles
+    /// aldrig som spørgsmål, selvom de forbliver pending i DCR.
+    /// </summary>
+    public List<string> RecommendedTopicIds { get; set; } = new();
+
+    /// <summary>
     /// Svar-labels der er vist for borgeren, men endnu ikke udført i DCR.
     /// Prøves igen ved næste bekræftelse, hvis udførslen fejlede.
     /// </summary>

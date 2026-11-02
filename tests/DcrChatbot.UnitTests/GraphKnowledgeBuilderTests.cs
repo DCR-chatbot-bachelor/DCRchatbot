@@ -77,6 +77,21 @@ public sealed class GraphKnowledgeBuilderTests
     }
 
     [Fact]
+    public void Build_MentionsTheTopicTheGraphRecommendsAfterAnAnswer()
+    {
+        var graph = SuFaq();
+        graph.Relations.Add(new() { Type = "response", SourceId = "A2Copy", TargetId = "hjælp" });
+
+        var text = Normalize(GraphKnowledgeBuilder.Build(graph));
+
+        Assert.Contains(
+            "Spørgsmål: Hvorfor skal jeg bruge minSU?\n" +
+            "Svar: På minSU kan du følge med i din SU.\n" +
+            "Foreslå bagefter: \"Jeg vil gerne have hjælp til at søge SU\"",
+            text);
+    }
+
+    [Fact]
     public void Build_EmptyGraph_GivesEmptyText()
     {
         Assert.Equal(string.Empty, GraphKnowledgeBuilder.Build(new DcrGraphDefinition()));

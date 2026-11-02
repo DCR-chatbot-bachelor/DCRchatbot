@@ -1399,6 +1399,89 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         dcrRepository.Verify(r => r.GetGraphDefinitionAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // SU-grafens anbefaling: svaret om "første gang" gør emnet "hjælp"
+    // pending via en response-relation, og "hjælp" starter formularen. Pilen
+    // kan gå fra svar-labelet (A2) eller fra selve emnet.
+    private async Task<ChatResponse> StartRecommendationGraphAsync(bool recommendFromAnswer)
+    {
+        var executed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        GraphState State()
+        {
+            var askedFirstTime = executed.Contains("foerstegang");
+            var recommended = recommendFromAnswer ? executed.Contains("A2") : askedFirstTime;
+            var wantsHelp = executed.Contains("hjaelp");
+            return new()
+            {
+                Events =
+                [
+                    new DcrEvent { Id = "foerstegang", Label = "Det er første gang jeg søger SU - hvad gør jeg?", DataType = "choice", ChoiceValues = "ja (ja), nej (nej)", IsEnabled = true, Included = true, IsExecuted = askedFirstTime ? true : null, Sequence = 1 },
+                    new DcrEvent { Id = "A2", Label = "Du skal søge SU i minSU.", DataType = "label", IsEnabled = true, Included = true, IsPending = askedFirstTime && !executed.Contains("A2"), Sequence = 2 },
+                    new DcrEvent { Id = "hjaelp", Label = "Jeg vil gerne have hjælp til at søge SU", DataType = "choice", ChoiceValues = "ja (ja), nej (nej)", IsEnabled = true, Included = true, IsPending = recommended && !wantsHelp, IsExecuted = wantsHelp ? true : null, Sequence = 3 },
+                    new DcrEvent { Id = "A8", Label = "Hvad er dit fulde navn?", DataType = "text", IsEnabled = wantsHelp, Included = wantsHelp, IsPending = wantsHelp && !executed.Contains("A8"), Sequence = 4 }
+                ]
+            };
+        }
+
+        dcrRepository.Setup(r => r.CreateSimulationAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("sim-1");
+        dcrRepository.Setup(r => r.GetGraphStateAsync("graph-1", "sim-1", It.IsAny<CancellationToken>())).ReturnsAsync(State);
+        dcrRepository
+            .Setup(r => r.ExecuteEventAsync("graph-1", "sim-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string?, CancellationToken>((_, _, id, _, _) => executed.Add(id))
+            .ReturnsAsync(true);
+
+        return await service.StartAsync(new ChatRequest { GraphId = "graph-1" });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TopicMadePendingByTheGraph_IsSuggestedAfterTheAnswer_NotAskedAsAQuestion(bool recommendFromAnswer)
+    {
+        var start = await StartRecommendationGraphAsync(recommendFromAnswer);
+        SetupLlmMatch("foerstegang", null);
+
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "første gang søge su" });
+        var answer = await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+
+        Assert.Equal("Du skal søge SU i minSU.\n\nJeg kan også hjælpe dig med:", answer.Message);
+        Assert.Equal(["hjaelp"], answer.Suggestions.Select(s => s.EventId));
+        Assert.Empty(answer.AnswerOptions);
+    }
+
+    [Fact]
+    public async Task RecommendedTopic_StartsTheForm_WhenTheCitizenPicksIt()
+    {
+        var start = await StartRecommendationGraphAsync(recommendFromAnswer: true);
+        SetupLlmMatch("foerstegang", null);
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "første gang søge su" });
+        await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+
+        // Knappen sender emnets tekst, som matches præcist uden LLM'en.
+        var helpDraft = await service.SendMessageAsync(
+            start.SessionId, new ChatRequest { Message = "Jeg vil gerne have hjælp til at søge SU" });
+        var form = await service.ConfirmDraftAsync(start.SessionId, helpDraft.PendingDraft!.Id);
+
+        Assert.Equal("hjaelp", helpDraft.PendingDraft!.EventId);
+        Assert.Equal("Hvad er dit fulde navn?", form.Message);
+    }
+
+    [Fact]
+    public async Task RecommendedTopic_DoesNotTakeOverTheNextMessage_WhenTheCitizenAsksSomethingElse()
+    {
+        var start = await StartRecommendationGraphAsync(recommendFromAnswer: true);
+        SetupLlmMatch("foerstegang", null);
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "første gang søge su" });
+        await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+        SetupLlmMatch(null!, null);
+
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvad er vejret?" });
+
+        // Ikke "Jeg mangler stadig et svar på: Jeg vil gerne have hjælp …".
+        Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
+        Assert.Null(response.PendingDraft);
+        llmService.Verify(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     // Svarer på det næste spørgsmål i formular-grafen og bekræfter svaret.
     private async Task<ChatResponse> AnswerAsync(ChatSession session, string value)
     {
