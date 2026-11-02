@@ -232,6 +232,7 @@ public sealed class ChatService(
             session.ParkedAnswers.Clear();
             session.AnswerLabelsToExecute.Clear();
             session.PendingLabelsBeforeExecution = null;
+            session.AvailableTopicsBeforeExecution = null;
             var checkpointIndex = session.Checkpoints.IndexOf(checkpoint);
             session.Checkpoints = session.Checkpoints.Take(checkpointIndex).ToList();
             session.History = session.History
@@ -533,7 +534,7 @@ public sealed class ChatService(
 
         // Et emne, som det bekræftede emne gør pending, er en anbefaling og
         // må ikke stilles som næste spørgsmål.
-        var recommendations = RecordRecommendations(session, before);
+        SimulationSync.RecordRecommendations(session);
         var droppedDrafts = DraftQueue.DropQueuedDraftsThatNoLongerApply(session);
 
         // FR-HITL-2: en rettelse bekræftes med de konsekvenser, den fik.
@@ -573,8 +574,15 @@ public sealed class ChatService(
 
         // Et svar-label kan også anbefale et emne (fx svaret om "første gang"
         // → "hjælp til at søge SU"); det ses først, når svaret er udført.
-        recommendations.AddRange(RecordRecommendations(session, before)
-            .Where(topic => recommendations.All(r => r.Id != topic.Id)));
+        // Kunne grafens nye tilstand ikke hentes, huskes anbefalingen i
+        // stedet, når den hentes ved næste handling (SimulationSync).
+        if (!session.IsGraphStateStale)
+        {
+            SimulationSync.RecordRecommendations(session);
+            session.AvailableTopicsBeforeExecution = null;
+        }
+
+        var recommendations = FaqGraph.FindRecommendedTopics(session.CurrentGraphState, before.AvailableTopics);
 
         if (isFinished)
         {
@@ -614,17 +622,6 @@ public sealed class ChatService(
         return ToResponse(session, reply, confirmedAnswer, suggestions);
     }
 
-    // Emner, grafen har gjort pending siden før udførslen, huskes som
-    // anbefalinger, så de aldrig stilles som spørgsmål (se FaqGraph).
-    private static List<DcrEvent> RecordRecommendations(ChatSession session, StateBeforeExecution before)
-    {
-        var recommended = FaqGraph.FindRecommendedTopics(session.CurrentGraphState, before.AvailableTopics);
-        session.RecommendedTopicIds.AddRange(recommended
-            .Select(e => e.Id)
-            .Where(id => !session.RecommendedTopicIds.Contains(id, StringComparer.OrdinalIgnoreCase)));
-        return recommended;
-    }
-
     // Udfører kladden i DCR og henter grafens nye tilstand. Returnerer
     // tilstanden fra lige før, så svaret kan beskrive, hvad der ændrede sig.
     private async Task<StateBeforeExecution> ExecuteDraftAsync(
@@ -648,6 +645,7 @@ public sealed class ChatService(
             state?.GetEvent(draft.EventId)?.IsExecuted == true,
             FaqGraph.GetAvailableTopicIds(state));
         session.PendingLabelsBeforeExecution = before.PendingLabels;
+        session.AvailableTopicsBeforeExecution = before.AvailableTopics;
         draft.ExecutionStatus = "Executing";
         await sessionStore.SaveSessionAsync(session, cancellationToken);
         try
@@ -659,6 +657,7 @@ public sealed class ChatService(
         {
             draft.ExecutionStatus = "Pending";
             session.PendingLabelsBeforeExecution = null;
+            session.AvailableTopicsBeforeExecution = null;
             await sessionStore.SaveSessionAsync(session, cancellationToken);
             throw;
         }

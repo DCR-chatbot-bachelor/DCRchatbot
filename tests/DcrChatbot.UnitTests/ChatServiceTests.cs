@@ -1402,11 +1402,19 @@ public async Task RejectDraft_DoesNotExecuteEvent()
     // SU-grafens anbefaling: svaret om "første gang" gør emnet "hjælp"
     // pending via en response-relation, og "hjælp" starter formularen. Pilen
     // kan gå fra svar-labelet (A2) eller fra selve emnet.
-    private async Task<ChatResponse> StartRecommendationGraphAsync(bool recommendFromAnswer)
+    private async Task<ChatResponse> StartRecommendationGraphAsync(
+        bool recommendFromAnswer, bool failRefreshAfterAnswerLabel = false)
     {
         var executed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var failNextRefresh = failRefreshAfterAnswerLabel;
         GraphState State()
         {
+            if (failNextRefresh && executed.Contains("A2"))
+            {
+                failNextRefresh = false;
+                throw new HttpRequestException("DCR svarer ikke");
+            }
+
             var askedFirstTime = executed.Contains("foerstegang");
             var recommended = recommendFromAnswer ? executed.Contains("A2") : askedFirstTime;
             var wantsHelp = executed.Contains("hjaelp");
@@ -1479,6 +1487,23 @@ public async Task RejectDraft_DoesNotExecuteEvent()
         // Ikke "Jeg mangler stadig et svar på: Jeg vil gerne have hjælp …".
         Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
         Assert.Null(response.PendingDraft);
+        llmService.Verify(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RecommendedTopic_IsStillNotAskedAsAQuestion_WhenTheStateCouldNotBeFetchedAfterTheAnswer()
+    {
+        // Svar-labelet udføres, men grafens nye tilstand kan først hentes
+        // ved næste besked; anbefalingen må ikke gå tabt undervejs.
+        var start = await StartRecommendationGraphAsync(recommendFromAnswer: true, failRefreshAfterAnswerLabel: true);
+        SetupLlmMatch("foerstegang", null);
+        var draft = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "første gang søge su" });
+        await service.ConfirmDraftAsync(start.SessionId, draft.PendingDraft!.Id);
+        SetupLlmMatch(null!, null);
+
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvad er vejret?" });
+
+        Assert.Contains("jeg kan hjælpe dig med disse emner", response.Message);
         llmService.Verify(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 

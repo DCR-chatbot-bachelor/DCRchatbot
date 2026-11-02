@@ -49,6 +49,13 @@ public class ChatSession
     /// kunne hentes lige efter udførslen. Null når intet er i gang.
     /// </summary>
     public List<string>? PendingLabelsBeforeExecution { get; set; }
+
+    /// <summary>
+    /// De emner, borgeren kunne vælge, før det seneste event blev udført.
+    /// Gemmes, så anbefalede emner kan findes, også hvis grafens nye
+    /// tilstand først kan hentes ved næste handling. Null når intet er i gang.
+    /// </summary>
+    public List<string>? AvailableTopicsBeforeExecution { get; set; }
     public List<ChatMessage> History { get; set; } = new();
     public List<ExecutedEvent> ExecutedEvents { get; set; } = new();
     public List<ConversationCheckpoint> Checkpoints { get; set; } = new();
