@@ -25,6 +25,13 @@ public class ChatSession
     public List<PendingAnswer> ParkedAnswers { get; set; } = new();
 
     /// <summary>
+    /// Emner, grafen har anbefalet ved at gøre dem pending (fx "hjælp til at
+    /// søge SU" efter svaret om første gang). De vises som forslag og stilles
+    /// aldrig som spørgsmål, selvom de forbliver pending i DCR.
+    /// </summary>
+    public List<string> RecommendedTopicIds { get; set; } = new();
+
+    /// <summary>
     /// Svar-labels der er vist for borgeren, men endnu ikke udført i DCR.
     /// Prøves igen ved næste bekræftelse, hvis udførslen fejlede.
     /// </summary>
@@ -42,6 +49,13 @@ public class ChatSession
     /// kunne hentes lige efter udførslen. Null når intet er i gang.
     /// </summary>
     public List<string>? PendingLabelsBeforeExecution { get; set; }
+
+    /// <summary>
+    /// De emner, borgeren kunne vælge, før det seneste event blev udført.
+    /// Gemmes, så anbefalede emner kan findes, også hvis grafens nye
+    /// tilstand først kan hentes ved næste handling. Null når intet er i gang.
+    /// </summary>
+    public List<string>? AvailableTopicsBeforeExecution { get; set; }
     public List<ChatMessage> History { get; set; } = new();
     public List<ExecutedEvent> ExecutedEvents { get; set; } = new();
     public List<ConversationCheckpoint> Checkpoints { get; set; } = new();

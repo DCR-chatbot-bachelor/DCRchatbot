@@ -31,6 +31,18 @@ public static class GraphKnowledgeBuilder
                 text.AppendLine();
                 text.AppendLine($"Spørgsmål: {topic.Label}");
                 text.AppendLine($"Svar: {string.Join(" ", answers.Select(a => a.Label))}");
+
+                // Et emne, som spørgsmålet eller svaret gør pending, er
+                // grafens anbefaling; DCR-tilstandene viser det som et forslag.
+                var recommendations = answers.Prepend(topic)
+                    .SelectMany(e => Targets(definition, e.Id, "response"))
+                    .Where(IsTopic)
+                    .DistinctBy(e => e.Id)
+                    .ToList();
+                foreach (var recommendation in recommendations)
+                {
+                    text.AppendLine($"Foreslå bagefter: \"{recommendation.Label}\"");
+                }
             }
         }
 

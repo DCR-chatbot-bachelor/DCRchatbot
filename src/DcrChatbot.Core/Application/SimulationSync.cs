@@ -42,6 +42,28 @@ internal sealed class SimulationSync(IDcrRepository dcrRepository, ISessionStore
                 .Except(session.AnswerLabelsToExecute));
             session.PendingLabelsBeforeExecution = null;
         }
+
+        // Det samme gælder emner, udførslen anbefalede: de skal huskes, før
+        // de ellers bliver stillet som spørgsmål.
+        if (session.AvailableTopicsBeforeExecution is not null)
+        {
+            RecordRecommendations(session);
+            session.AvailableTopicsBeforeExecution = null;
+        }
+    }
+
+    // Emner, grafen har gjort pending siden før udførslen, huskes som
+    // anbefalinger, så de aldrig stilles som spørgsmål (se FaqGraph).
+    public static void RecordRecommendations(ChatSession session)
+    {
+        if (session.AvailableTopicsBeforeExecution is not { } availableBefore)
+        {
+            return;
+        }
+
+        session.RecommendedTopicIds.AddRange(FaqGraph.FindRecommendedTopics(session.CurrentGraphState, availableBefore)
+            .Select(e => e.Id)
+            .Where(id => !session.RecommendedTopicIds.Contains(id, StringComparer.OrdinalIgnoreCase)));
     }
 
     public async Task ExecuteEventAsync(

@@ -49,8 +49,10 @@ public static class ChatResponses
         FaqGraph.GetTopicEvents(state)
             .Where(e => !string.IsNullOrWhiteSpace(e.Label))
             .Take(MaxSuggestions)
-            .Select(e => new Suggestion { EventId = e.Id, Label = e.Label })
+            .Select(ToSuggestion)
             .ToList();
+
+    public static Suggestion ToSuggestion(DcrEvent topic) => new() { EventId = topic.Id, Label = topic.Label };
 
     // Venter botten på svar på et choice-spørgsmål, er grafens gyldige værdier
     // svar-knapper. Ikke mens en kladde er åben: der svares med Ja/Nej til den.
@@ -61,7 +63,7 @@ public static class ChatResponses
             return [];
         }
 
-        var question = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState);
+        var question = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
         return question is null ||
                !string.Equals(question.DataType, "choice", StringComparison.OrdinalIgnoreCase)
             ? []
