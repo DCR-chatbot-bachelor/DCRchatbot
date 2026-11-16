@@ -62,8 +62,15 @@ public sealed class ValidationTrace
 
 public sealed class RoutingTrace
 {
-    /// <summary>graph_routed, graph_ambiguous eller graph_not_found.</summary>
+    /// <summary>
+    /// graph_routed, graph_ambiguous eller graph_not_found ved første besked;
+    /// graph_switched, graph_unchanged, graph_ambiguous eller graph_not_found,
+    /// når en senere besked ikke passede til den aktuelle graf.
+    /// </summary>
     public string Outcome { get; set; } = string.Empty;
+
+    /// <summary>Grafen, samtalen var i, da der blev routet midt i samtalen.</summary>
+    public string? PreviousGraphId { get; set; }
     public string? GraphId { get; set; }
     public List<string> CandidateGraphIds { get; set; } = [];
     public string Explanation { get; set; } = string.Empty;

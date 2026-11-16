@@ -33,13 +33,20 @@ public sealed class TurnTrace
     /// <summary>
     /// Routing-beslutningen for turen, så routing-fejl kan måles adskilt fra
     /// event-match-fejl. Outcome er graph_routed, graph_ambiguous eller
-    /// graph_not_found.
+    /// graph_not_found; midt i samtalen også graph_switched eller
+    /// graph_unchanged, med den graf, samtalen kom fra.
     /// </summary>
-    public void RecordRouting(string outcome, string? graphId, IEnumerable<string> candidateGraphIds, string explanation)
+    public void RecordRouting(
+        string outcome,
+        string? graphId,
+        IEnumerable<string> candidateGraphIds,
+        string explanation,
+        string? previousGraphId = null)
     {
         Routing = new RoutingTrace
         {
             Outcome = outcome,
+            PreviousGraphId = string.IsNullOrWhiteSpace(previousGraphId) ? null : previousGraphId,
             GraphId = graphId,
             CandidateGraphIds = candidateGraphIds.ToList(),
             Explanation = explanation

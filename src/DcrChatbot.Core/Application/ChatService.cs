@@ -33,6 +33,7 @@ public sealed class ChatService(
     private readonly SimulationSync simulation = new(dcrRepository, sessionStore);
     private readonly LlmOnlyConversation llmOnly = new(llmService, llmOptions.Value, trace);
     private readonly GraphRouter graphRouter = new(llmService, llmOptions.Value);
+    private readonly GraphActivation graphActivation = new(dcrRepository, sessionStore);
     private readonly IDcrReplyStrategy strictReplies = new StrictReplies();
     private readonly IDcrReplyStrategy guidedReplies = new GuidedReplies(llmService, llmOptions.Value, logger);
 
@@ -57,7 +58,7 @@ public sealed class ChatService(
         {
             var knowledge = GraphKnowledgeBuilder.Build(
                 await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken));
-            var llmOnlySession = new ChatSession { GraphId = graphId, Mode = request.Mode, GraphKnowledge = knowledge };
+            var llmOnlySession = new ChatSession { GraphId = graphId, Mode = request.Mode, GraphKnowledge = knowledge, IsGraphFixed = true };
             await sessionStore.SaveSessionAsync(llmOnlySession, cancellationToken);
             return ToResponse(llmOnlySession, LlmOnlyConversation.Greeting);
         }
@@ -69,7 +70,8 @@ public sealed class ChatService(
             GraphId = graphId,
             Mode = request.Mode,
             SimulationId = simulationId,
-            CurrentGraphState = state
+            CurrentGraphState = state,
+            IsGraphFixed = true
         };
 
         await sessionStore.SaveSessionAsync(session, cancellationToken);
@@ -103,6 +105,10 @@ public sealed class ChatService(
             trace.Attach(session);
 
             var message = userMessage;
+
+            // Er grafen netop valgt ud fra denne besked, routes der ikke
+            // igen i samme tur.
+            var mayRoute = HasGraph(session);
             if (!HasGraph(session))
             {
                 var routing = await RouteToGraphAsync(session, message, cancellationToken);
@@ -116,7 +122,16 @@ public sealed class ChatService(
 
             if (session.Mode == ExecutionMode.LlmOnly)
             {
-                return await llmOnly.ReplyAsync(session, message, cancellationToken);
+                // LlmOnly har ingen emne-match; dens fast afslag svarer til
+                // no_match og får derfor også lov at skifte graf.
+                var reply = await llmOnly.GenerateReplyAsync(session, message, cancellationToken);
+                if (mayRoute && LlmOnlyConversation.IsNoAnswer(reply) &&
+                    await TrySwitchGraphAsync(session, message, null, cancellationToken))
+                {
+                    reply = await llmOnly.GenerateReplyAsync(session, message, cancellationToken);
+                }
+
+                return llmOnly.Complete(session, message, reply);
             }
 
             session.History.Add(new ChatMessage { MessageId = request.MessageId, Sender = "User", Content = message });
@@ -138,7 +153,7 @@ public sealed class ChatService(
                     session, session.PendingAnswersQueue[0], answer.Value, cancellationToken);
             }
 
-            return await CreateDraftAsync(session, message, request.MessageId, cancellationToken);
+            return await CreateDraftAsync(session, message, request.MessageId, cancellationToken, mayRoute);
         }, cancellationToken);
     }
 
@@ -251,6 +266,14 @@ public sealed class ChatService(
             var checkpoint = session.Checkpoints.FirstOrDefault(c => c.MessageId == messageId)
                 ?? throw new ChatConflictException("Denne besked kan ikke længere bruges som tilbagegangspunkt.");
 
+            // Har samtalen skiftet emne siden, skiftes der tilbage til den
+            // graf, svaret hørte til, før svarene udføres igen.
+            if (!string.IsNullOrWhiteSpace(checkpoint.GraphId))
+            {
+                await graphActivation.ActivateAsync(session, checkpoint.GraphId, cancellationToken);
+                trace.Attach(session);
+            }
+
             await simulation.ReplayAsync(session, checkpoint.ExecutedEvents, cancellationToken);
             session.PendingAnswersQueue.Clear();
             session.ParkedAnswers.Clear();
@@ -349,27 +372,74 @@ public sealed class ChatService(
             : message;
         session.UnroutedQuestion = null;
 
-        var graphId = decision.Graph.GraphId;
-        session.GraphId = graphId;
-        if (session.Mode == ExecutionMode.LlmOnly)
-        {
-            // LlmOnly bruger samme routing og får kun den valgte grafs viden,
-            // så den har præcis samme viden som DCR-tilstandene.
-            session.GraphKnowledge = GraphKnowledgeBuilder.Build(
-                await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken));
-        }
-        else
-        {
-            session.SimulationId = await dcrRepository.CreateSimulationAsync(graphId, cancellationToken);
-            session.CurrentGraphState = await dcrRepository.GetGraphStateAsync(
-                graphId, session.SimulationId, cancellationToken);
-        }
-
-        // Gemmes med det samme, så simulationen ikke går tabt, hvis
-        // resten af turen fejler.
-        await sessionStore.SaveSessionAsync(session, cancellationToken);
+        // LlmOnly bruger samme routing og får kun den valgte grafs viden,
+        // så den har præcis samme viden som DCR-tilstandene.
+        await graphActivation.ActivateAsync(session, decision.Graph.GraphId, cancellationToken);
         trace.Attach(session);
         return new RoutingResult(question, null);
+    }
+
+    // Skift af emne midt i samtalen: beskeden passede ikke til den aktuelle
+    // graf (ingen emne-match, intet svar på spørgsmålet, eller et LlmOnly-
+    // afslag). Peger routing på en anden graf, skiftes der dertil, og
+    // beskeden behandles der. Den gamle graf lægges til side, så borgeren
+    // kan vende tilbage til den. Returnerer true, hvis der blev skiftet.
+    private async Task<bool> TrySwitchGraphAsync(
+        ChatSession session, string message, string? messageId, CancellationToken cancellationToken)
+    {
+        // Kladder i køen hører til den aktuelle graf og skal afgøres først.
+        // En samtale startet på en bestemt graf (testbatteriet) bliver i den.
+        if (session.IsGraphFixed || session.PendingAnswersQueue.Count > 0)
+        {
+            return false;
+        }
+
+        IReadOnlyList<GraphCatalogEntry> catalog;
+        try
+        {
+            catalog = await graphCatalog.GetEntriesAsync(dcrRepository, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Kunne ikke hente grafkataloget i session {SessionId}; bliver i grafen.", session.SessionId);
+            return false;
+        }
+
+        if (!catalog.Any(g => !string.Equals(g.GraphId, session.GraphId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var previousGraphId = session.GraphId;
+        var decision = await graphRouter.RouteAsync(message, catalog, cancellationToken);
+        var target = decision.Graph;
+        var switches = target is not null &&
+                       !string.Equals(target.GraphId, previousGraphId, StringComparison.OrdinalIgnoreCase);
+        var outcome = switches
+            ? "graph_switched"
+            : decision.Kind switch
+            {
+                GraphRoutingKind.Routed => "graph_unchanged",
+                GraphRoutingKind.Ambiguous => "graph_ambiguous",
+                _ => "graph_not_found"
+            };
+        trace.RecordRouting(
+            outcome, target?.GraphId, decision.Candidates.Select(g => g.GraphId), decision.Explanation, previousGraphId);
+        if (!switches)
+        {
+            return false;
+        }
+
+        // Tilbagegangspunktet for beskeden blev lavet i den gamle graf;
+        // den nye graf laver sit eget, hvis beskeden bliver et svar der.
+        if (!string.IsNullOrWhiteSpace(messageId))
+        {
+            session.Checkpoints.RemoveAll(c => c.MessageId == messageId);
+        }
+
+        await graphActivation.ActivateAsync(session, target!.GraphId, cancellationToken);
+        trace.Attach(session);
+        return true;
     }
 
     private static List<Suggestion> ToGraphSuggestions(IEnumerable<GraphCatalogEntry> graphs) =>
@@ -382,8 +452,10 @@ public sealed class ChatService(
     private sealed record Interpretation(
         DcrEvent Event, string? Value, bool IsEventMatch, List<PendingAnswer> InferredDrafts);
 
+    // mayRoute: passer beskeden ikke til den aktuelle graf, må der skiftes
+    // til en anden (én gang pr. tur, så et skift ikke kan gentage sig selv).
     private async Task<ChatResponse> CreateDraftAsync(
-        ChatSession session, string message, string? messageId, CancellationToken cancellationToken)
+        ChatSession session, string message, string? messageId, CancellationToken cancellationToken, bool mayRoute = true)
     {
         await simulation.EnsureFreshStateAsync(session, cancellationToken);
 
@@ -393,6 +465,11 @@ public sealed class ChatService(
         var candidates = FaqGraph.GetTopicEvents(session.CurrentGraphState);
         if (pendingEvent is null && candidates.Count == 0)
         {
+            if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+            {
+                return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
+            }
+
             trace.RecordOutcome("no_candidates");
             return ToResponse(session, "Der er ingen tilgængelige spørgsmål lige nu.");
         }
@@ -408,6 +485,13 @@ public sealed class ChatService(
             var topic = await MatchTopicAsync(message, candidates, cancellationToken);
             if (topic is null)
             {
+                // Handler beskeden om en anden graf (fx alkohol midt i SU),
+                // fortsætter samtalen dér med det samme.
+                if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+                {
+                    return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
+                }
+
                 // Fx "hvad kan jeg få hjælp til?" eller noget, grafen ikke
                 // dækker: vis grafens emner i stedet for blot at afvise. Også
                 // i DcrGuided: et svar, DCR ikke har valgt, kunne føre
@@ -431,6 +515,14 @@ public sealed class ChatService(
         {
             if (inferredDrafts.Count == 0)
             {
+                // Midt i en formular kan borgeren spørge om noget helt
+                // andet; formularen ligger klar, hvis de vender tilbage.
+                if (mayRoute && !isEventMatch &&
+                    await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+                {
+                    return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
+                }
+
                 // Botten har stillet et spørgsmål; den bedste hjælp er at
                 // minde om det i stedet for blot at bede om en omformulering.
                 trace.RecordOutcome("no_value");
@@ -556,6 +648,7 @@ public sealed class ChatService(
         session.Checkpoints.Add(new ConversationCheckpoint
         {
             MessageId = messageId,
+            GraphId = session.GraphId,
             ExecutedEvents = session.ExecutedEvents
                 .Select(e => new ExecutedEvent { EventId = e.EventId, Value = e.Value })
                 .ToList()

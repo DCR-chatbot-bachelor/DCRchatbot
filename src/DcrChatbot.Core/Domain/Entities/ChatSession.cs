@@ -25,6 +25,18 @@ public class ChatSession
     public string? UnroutedQuestion { get; set; }
 
     /// <summary>
+    /// Grafer, samtalen har talt om før det aktuelle emne. Vender borgeren
+    /// tilbage til et af dem, genoptages grafens simulation og tilstand.
+    /// </summary>
+    public List<SuspendedGraph> SuspendedGraphs { get; set; } = new();
+
+    /// <summary>
+    /// Sat, når samtalen blev startet med et bestemt GraphId (fx af
+    /// testbatteriet). Så bliver samtalen i den graf og skifter aldrig emne.
+    /// </summary>
+    public bool IsGraphFixed { get; set; }
+
+    /// <summary>
     /// Afledte svar til felter, der endnu ikke kan udfyldes, fordi de venter
     /// på et tidligere felt (FR-DCR-2). De flyttes til køen, når feltet bliver
     /// enabled, så borgeren ikke skal gentage dem.

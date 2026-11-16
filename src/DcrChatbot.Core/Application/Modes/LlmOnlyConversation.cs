@@ -17,14 +17,26 @@ internal sealed class LlmOnlyConversation(ILlmService llmService, LlmOptions llm
 
     private const int HistoryLength = 20;
 
-    public async Task<ChatResponse> ReplyAsync(ChatSession session, string message, CancellationToken cancellationToken)
+    public async Task<ChatResponse> ReplyAsync(ChatSession session, string message, CancellationToken cancellationToken) =>
+        Complete(session, message, await GenerateReplyAsync(session, message, cancellationToken));
+
+    // Svaret genereres uden at blive gemt, så ChatService kan skifte graf
+    // og spørge igen, hvis grafens viden ikke dækkede beskeden.
+    public async Task<string> GenerateReplyAsync(ChatSession session, string message, CancellationToken cancellationToken)
     {
         var history = session.History
             .TakeLast(HistoryLength)
             .Select(m => (FromCitizen: m.Sender == "User", Text: m.Content));
         var prompt = ModePrompts.LlmOnly(session.GraphKnowledge ?? string.Empty, history, message);
-        var reply = (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Text.Trim();
+        return (await llmService.GenerateTextAsync(prompt, llmOptions, cancellationToken)).Text.Trim();
+    }
 
+    /// <summary>Regel 2: grafens viden dækker ikke beskeden (LlmOnlys no_match).</summary>
+    public static bool IsNoAnswer(string reply) =>
+        reply.Contains(ModePrompts.LlmOnlyNoAnswer.TrimEnd('.'), StringComparison.OrdinalIgnoreCase);
+
+    public ChatResponse Complete(ChatSession session, string message, string reply)
+    {
         session.History.Add(new ChatMessage { Sender = "User", Content = message });
         session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
         trace.RecordOutcome("llm_only_reply");

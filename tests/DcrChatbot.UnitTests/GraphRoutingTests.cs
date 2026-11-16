@@ -178,12 +178,13 @@ public sealed class GraphRoutingTests
     }
 
     [Fact]
-    public async Task Start_WithExplicitGraphId_NeverRoutes()
+    public async Task Start_WithExplicitGraphId_NeverRoutes_EvenWhenTheMessageMatchesNothing()
     {
         var start = await service.StartAsync(new ChatRequest { GraphId = SuGraphId });
         llmService
             .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(("minSU", new TokenUsageResult()));
+            .ReturnsAsync(((string?)null, new TokenUsageResult()));
+        SetupGraphMatch(HousingGraphId);
 
         await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "hvordan søger jeg boligstøtte?" });
 
@@ -245,6 +246,127 @@ public sealed class GraphRoutingTests
         Assert.Equal(["Hvordan søger jeg SU?"], first.Single(g => g.GraphId == SuGraphId).Topics);
         dcrRepository.Verify(r => r.GetGraphsAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task MessageAboutAnotherGraph_SwitchesGraph_AndAnswersThereInTheSameTurn()
+    {
+        var sessionId = await StartInSuGraphAsync();
+
+        var response = await service.SendMessageAsync(
+            sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+
+        var session = (await sessionStore.GetSessionAsync(sessionId))!;
+        Assert.Equal(HousingGraphId, session.GraphId);
+        Assert.Equal("sim-bolig", session.SimulationId);
+        Assert.Equal("bolig", response.PendingDraft?.EventId);
+        Assert.Equal("sim-su", Assert.Single(session.SuspendedGraphs).SimulationId);
+        Assert.Equal("graph_switched", trace.Routing?.Outcome);
+        Assert.Equal(SuGraphId, trace.Routing?.PreviousGraphId);
+        Assert.Equal(HousingGraphId, trace.Routing?.GraphId);
+    }
+
+    [Fact]
+    public async Task SwitchingBack_ResumesTheEarlierSimulation_InsteadOfStartingOver()
+    {
+        var sessionId = await StartInSuGraphAsync();
+        var housing = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+        await service.RejectDraftAsync(sessionId, housing.PendingDraft!.Id);
+
+        var su = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "hvad med SU-ansøgningen?" });
+
+        var session = (await sessionStore.GetSessionAsync(sessionId))!;
+        Assert.Equal(SuGraphId, session.GraphId);
+        Assert.Equal("sim-su", session.SimulationId);
+        Assert.Equal("minSU", su.PendingDraft?.EventId);
+        Assert.Equal(HousingGraphId, Assert.Single(session.SuspendedGraphs).GraphId);
+        dcrRepository.Verify(r => r.CreateSimulationAsync(SuGraphId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task MessageThatFitsNoGraph_StaysInTheCurrentGraph_AndShowsItsTopics()
+    {
+        var sessionId = await StartInSuGraphAsync();
+
+        var response = await service.SendMessageAsync(
+            sessionId, new ChatRequest { Message = "hvornår har svømmehallen åbent?" });
+
+        Assert.Equal(SuGraphId, (await sessionStore.GetSessionAsync(sessionId))!.GraphId);
+        Assert.Equal(["Hvordan søger jeg SU?"], response.Suggestions.Select(s => s.Label));
+        Assert.Equal("graph_not_found", trace.Routing?.Outcome);
+        Assert.Equal("no_match", trace.Outcome);
+    }
+
+    [Fact]
+    public async Task LlmOnly_SwitchesGraph_WhenTheCurrentGraphHasNoAnswer()
+    {
+        var start = await service.StartAsync(new ChatRequest { Mode = ExecutionMode.LlmOnly });
+        SetupGraphMatchByMessage();
+        llmService
+            .Setup(s => s.GenerateTextAsync(It.IsAny<string>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string prompt, LlmOptions _, CancellationToken _) =>
+                (prompt.Contains("kan jeg få boligstøtte?") && !prompt.Contains("Hvordan søger jeg boligstøtte?")
+                    ? "Det har jeg desværre ikke et svar på."
+                    : "Svar fra den rigtige graf", new TokenUsageResult()));
+        await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "jeg vil gerne søge SU" });
+
+        var response = await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+
+        Assert.Equal("Svar fra den rigtige graf", response.Message);
+        Assert.Equal(HousingGraphId, (await sessionStore.GetSessionAsync(start.SessionId))!.GraphId);
+        Assert.Equal("graph_switched", trace.Routing?.Outcome);
+    }
+
+    // En samtale uden fast graf, som er routet til SU-grafen og ikke har
+    // nogen åben kladde. Emne-match og routing svarer ud fra beskeden.
+    private async Task<string> StartInSuGraphAsync()
+    {
+        dcrRepository
+            .Setup(r => r.CreateSimulationAsync(HousingGraphId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("sim-bolig");
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync(HousingGraphId, "sim-bolig", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                Events =
+                [
+                    new DcrEvent
+                    {
+                        Id = "bolig", Label = "Hvordan søger jeg boligstøtte?", DataType = "choice",
+                        IsEnabled = true, Included = true, ChoiceValues = "ja (ja), nej (nej)"
+                    }
+                ]
+            });
+        SetupGraphMatchByMessage();
+        llmService
+            .Setup(s => s.MatchEventAsync(It.IsAny<string>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string message, IEnumerable<DcrEvent> topics, LlmOptions _, CancellationToken _) =>
+            {
+                var ids = topics.Select(t => t.Id).ToList();
+                string? id = message.Contains("bolig") && ids.Contains("bolig") ? "bolig"
+                    : message.Contains("SU-ansøgningen") && ids.Contains("minSU") ? "minSU"
+                    : null;
+                return (id, new TokenUsageResult());
+            });
+
+        var start = await service.StartAsync(new ChatRequest());
+        // "jeg vil gerne søge SU" routes til SU, men matcher intet emne:
+        // samtalen står i SU-grafen uden kladde.
+        await service.SendMessageAsync(start.SessionId, new ChatRequest { Message = "jeg vil gerne søge SU" });
+        Assert.Equal(SuGraphId, (await sessionStore.GetSessionAsync(start.SessionId))!.GraphId);
+        return start.SessionId;
+    }
+
+    private void SetupGraphMatchByMessage() =>
+        llmService
+            .Setup(s => s.MatchGraphAsync(
+                It.IsAny<string>(), It.IsAny<IEnumerable<GraphCatalogEntry>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string message, IEnumerable<GraphCatalogEntry> _, LlmOptions _, CancellationToken _) =>
+            {
+                string? id = message.Contains("bolig") ? HousingGraphId
+                    : message.Contains("SU") ? SuGraphId
+                    : null;
+                return (new LlmGraphMatch { GraphId = id, CandidateGraphIds = id is null ? [] : [id] }, new TokenUsageResult());
+            });
 
     private void SetupGraphMatch(string? graphId, List<string>? candidates = null, string explanation = "test") =>
         llmService
