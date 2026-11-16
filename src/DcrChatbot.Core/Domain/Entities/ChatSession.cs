@@ -18,6 +18,13 @@ public class ChatSession
     public string? GraphKnowledge { get; set; }
 
     /// <summary>
+    /// Borgerens spørgsmål, mens samtalen endnu ikke har en graf, fordi det
+    /// kunne handle om flere grafer. Når borgeren har valgt emne, besvares
+    /// spørgsmålet, så det ikke skal gentages. Null ellers.
+    /// </summary>
+    public string? UnroutedQuestion { get; set; }
+
+    /// <summary>
     /// Afledte svar til felter, der endnu ikke kan udfyldes, fordi de venter
     /// på et tidligere felt (FR-DCR-2). De flyttes til køen, når feltet bliver
     /// enabled, så borgeren ikke skal gentage dem.

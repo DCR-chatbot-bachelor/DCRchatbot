@@ -36,7 +36,8 @@ export async function startChat(
 ): Promise<ChatResponse> {
   return request<ChatResponse>('/api/chat/start', {
     method: 'POST',
-    body: JSON.stringify({ graphId, mode }),
+    // Uden graphId finder backend grafen ud fra borgerens første besked.
+    body: JSON.stringify({ graphId: graphId || undefined, mode }),
   })
 }
 

@@ -33,7 +33,10 @@ const MODES: { mode: ExecutionMode; label: string; description: string }[] = [
   },
 ];
 
-/** Valg af DCR-graf og tilstand (FR-TEST-1) før samtalen startes. */
+/**
+ * Valg af tilstand (FR-TEST-1) og eventuelt en fast DCR-graf, før samtalen
+ * startes. "Automatisk" lader backend finde grafen ud fra første besked.
+ */
 export function ChatSetup({
   graphs,
   selectedGraphId,
@@ -61,11 +64,11 @@ export function ChatSetup({
         id="graph"
         className="select"
         value={selectedGraphId}
-        disabled={isLoadingGraphs || isSending || graphs.length === 0}
+        disabled={isLoadingGraphs || isSending}
         onChange={(event) => onGraphChange(event.target.value)}
       >
         <option value="">
-          {isLoadingGraphs ? "Henter muligheder..." : "Vælg et område"}
+          {isLoadingGraphs ? "Henter muligheder..." : "Automatisk"}
         </option>
         {graphs.map((graph) => (
           <option key={graph.graphId} value={graph.graphId}>
@@ -92,7 +95,7 @@ export function ChatSetup({
       <button
         type="button"
         className="button button--primary button--wide"
-        disabled={!selectedGraphId || isSending}
+        disabled={isSending}
         onClick={onStart}
       >
         {!hasSession && <Plus size={14} aria-hidden="true" />}

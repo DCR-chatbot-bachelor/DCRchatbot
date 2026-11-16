@@ -1,6 +1,7 @@
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Llm;
+using DcrChatbot.Core.Application.Routing;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.DcrRepo;
@@ -70,6 +71,9 @@ builder.Services.AddCors(options => options.AddPolicy("Client", policy =>
 builder.Services.AddSingleton<ISessionStore, JsonFileSessionStore>();
 builder.Services.AddSingleton<ITraceStore>(new JsonLinesTraceStore(traceDirectory));
 builder.Services.AddScoped<TurnTrace>();
+
+// Grafkataloget til routing af borgerens første besked caches på tværs af sessioner.
+builder.Services.AddSingleton(new GraphCatalog());
 builder.Services.AddScoped<ChatService>();
 
 // Decorator: controlleren får TracingChatService, som skriver turen til trace-loggen.

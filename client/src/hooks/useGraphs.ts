@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getGraphs } from "../api/chatApi";
 import type { DcrGraph } from "../types/chat";
 
-/** Henter de tilgængelige DCR-grafer og husker hvilken der er valgt. */
+/** Henter de tilgængelige DCR-grafer og husker hvilken der er valgt ("" = automatisk). */
 export function useGraphs() {
   const [graphs, setGraphs] = useState<DcrGraph[]>([]);
   const [selectedGraphId, setSelectedGraphId] = useState("");
@@ -11,10 +11,9 @@ export function useGraphs() {
 
   useEffect(() => {
     getGraphs()
-      .then((availableGraphs) => {
-        setGraphs(availableGraphs);
-        setSelectedGraphId(availableGraphs[0]?.graphId ?? "");
-      })
+      // Standard er "Automatisk" (tom streng): grafen findes ud fra
+      // borgerens første besked. En fast graf kan vælges til test.
+      .then((availableGraphs) => setGraphs(availableGraphs))
       .catch((requestError: Error) => {
         setError(
           `Kunne ikke hente DCR-grafer. Kontrollér at Web API'et kører. ${requestError.message}`,

@@ -112,6 +112,46 @@ internal static class LlmIntentPrompt
     public static string? ParseMatchedEventId(string text, string providerName) =>
         Deserialize<MatchEventResult>(text, providerName).MatchedEventId;
 
+    // Vælger grafen (emneområdet) for borgerens første besked ud fra
+    // grafernes titler og FAQ-emner.
+    public static string BuildMatchGraphPrompt(string userMessage, IEnumerable<GraphCatalogEntry> graphs)
+    {
+        var catalog = graphs
+            .Select(graph => new { id = graph.GraphId, title = graph.Title, topics = graph.Topics })
+            .ToArray();
+
+        return $"""
+            User message:
+            {userMessage}
+
+            Available topic areas:
+            {ToPromptJson(catalog)}
+
+            Identify which topic area the user's message is about. Use the
+            title and the topics of each area; the message does not have to
+            use the same words.
+            Set GraphId to the id of the area when exactly one area fits.
+            When several areas fit equally well, set GraphId to null and list
+            their ids in CandidateGraphIds.
+            Set GraphId to null and leave CandidateGraphIds empty when the
+            message is not about any of the areas, for example a greeting, a
+            general question such as "what can you help me with?", or a topic
+            none of the areas cover. Never guess.
+            Only use ids from the list above.
+            Return only JSON with exactly these fields:
+            GraphId (string or null), CandidateGraphIds (array of strings),
+            Explanation (short string).
+            """;
+    }
+
+    public static LlmGraphMatch ParseGraphMatch(string text, string providerName)
+    {
+        var result = Deserialize<LlmGraphMatch>(text, providerName);
+        result.CandidateGraphIds ??= new();
+        result.Explanation ??= string.Empty;
+        return result;
+    }
+
     // Udtrækker værdien til det spørgsmål botten har stillet, og eventuelle
     // svar på de andre åbne spørgsmål, som borgeren nævner i samme besked.
     public static string BuildValuePrompt(

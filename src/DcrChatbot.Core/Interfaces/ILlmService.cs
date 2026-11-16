@@ -20,6 +20,17 @@ public interface ILlmService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Vælger den graf i kataloget, borgerens besked handler om. Som ved
+    /// MatchEventAsync må modellen kun vælge blandt de id'er, den får;
+    /// kalderen behandler et ukendt id som null.
+    /// </summary>
+    Task<(LlmGraphMatch GraphMatch, TokenUsageResult TokenUsage)> MatchGraphAsync(
+        string userMessage,
+        IEnumerable<GraphCatalogEntry> graphs,
+        LlmOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Udtrækker svaret på det stillede spørgsmål og eventuelle afledte svar
     /// på de andre åbne spørgsmål i samme besked (FR-LLM-2, FR-DCR-2).
     /// </summary>

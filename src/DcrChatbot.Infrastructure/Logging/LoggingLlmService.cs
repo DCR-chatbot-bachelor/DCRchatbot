@@ -24,6 +24,19 @@ public sealed class LoggingLlmService(
             r => r.TokenUsage,
             r => r.MatchedEventId);
 
+    // Den valgte graf logges som "event", kandidaterne som "afledte".
+    public Task<(LlmGraphMatch GraphMatch, TokenUsageResult TokenUsage)> MatchGraphAsync(
+        string userMessage,
+        IEnumerable<GraphCatalogEntry> graphs,
+        LlmOptions options,
+        CancellationToken cancellationToken = default) =>
+        TrackAsync(
+            "MatchGraph", options,
+            () => inner.MatchGraphAsync(userMessage, graphs, options, cancellationToken),
+            r => r.TokenUsage,
+            r => r.GraphMatch.GraphId,
+            r => r.GraphMatch.CandidateGraphIds);
+
     public Task<(LlmValueResult ValueResult, TokenUsageResult TokenUsage)> ExtractValueAsync(
         string userMessage,
         DcrEvent matchedEvent,

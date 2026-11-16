@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using DcrChatbot.Core.Application.Llm;
 using DcrChatbot.Core.Domain.Entities;
+using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Options;
 using DcrChatbot.Infrastructure.LlmProviders;
 
@@ -15,8 +16,8 @@ namespace DcrChatbot.UnitTests;
 public sealed class PromptSnapshotTests
 {
     // Hashen af alle prompts i PromptCatalog.Version.
-    private const string ExpectedVersion = "v3";
-    private const string ExpectedHash = "EDE790D292C03877";
+    private const string ExpectedVersion = "v4";
+    private const string ExpectedHash = "5CD3F3B81FC1F53D";
 
     [Fact]
     public void Prompts_MatchTheirVersion()
@@ -44,6 +45,7 @@ public sealed class PromptSnapshotTests
             LlmIntentPrompt.TextSystemPrompt,
             LlmIntentPrompt.BuildIntentPrompt("besked", [question, other]),
             LlmIntentPrompt.BuildMatchEventPrompt("besked", [question]),
+            LlmIntentPrompt.BuildMatchGraphPrompt("besked", [new GraphCatalogEntry { GraphId = "g", Title = "SU", Topics = ["Spørgsmål?"] }]),
             LlmIntentPrompt.BuildValuePrompt("besked", question, [other]),
             LlmIntentPrompt.BuildConfirmationPrompt("besked", draft),
             ModePrompts.LlmOnly("viden", [(true, "hej"), (false, "svar")], "besked"),

@@ -21,12 +21,29 @@ public sealed class TurnTrace
     public string? Outcome { get; private set; }
     public List<ValidationTrace> Validations { get; } = [];
     public List<LlmCallTrace> LlmCalls { get; } = [];
+    public RoutingTrace? Routing { get; private set; }
 
     public void Attach(ChatSession session)
     {
         SessionId = session.SessionId;
-        GraphId = session.GraphId;
+        GraphId = string.IsNullOrWhiteSpace(session.GraphId) ? null : session.GraphId;
         Mode = session.Mode;
+    }
+
+    /// <summary>
+    /// Routing-beslutningen for turen, så routing-fejl kan måles adskilt fra
+    /// event-match-fejl. Outcome er graph_routed, graph_ambiguous eller
+    /// graph_not_found.
+    /// </summary>
+    public void RecordRouting(string outcome, string? graphId, IEnumerable<string> candidateGraphIds, string explanation)
+    {
+        Routing = new RoutingTrace
+        {
+            Outcome = outcome,
+            GraphId = graphId,
+            CandidateGraphIds = candidateGraphIds.ToList(),
+            Explanation = explanation
+        };
     }
 
     public void RecordEvent(string eventId, string? proposedValue)

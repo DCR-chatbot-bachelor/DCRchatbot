@@ -1,6 +1,7 @@
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Dtos;
 using DcrChatbot.Core.Application.Llm;
+using DcrChatbot.Core.Application.Routing;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.Enums;
@@ -29,6 +30,7 @@ public sealed class ChatServiceTests
             sessionStore,
             Options.Create(new LlmOptions()),
             new TurnTrace(),
+            new GraphCatalog(),
             NullLogger<ChatService>.Instance);
     }
 

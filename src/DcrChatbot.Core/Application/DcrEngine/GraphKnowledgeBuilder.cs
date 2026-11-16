@@ -115,6 +115,17 @@ public static class GraphKnowledgeBuilder
         }
     }
 
+    /// <summary>
+    /// Grafens FAQ-emner som tekst, i grafens rækkefølge. Bruges i
+    /// grafkataloget, som borgerens første besked routes imod.
+    /// </summary>
+    public static IReadOnlyList<string> GetTopicLabels(DcrGraphDefinition definition) =>
+        Topics(definition)
+            .Select(e => e.Label.Trim())
+            .Where(label => label.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     // Et emne er et choice-spørgsmål med et ja-valg (FAQ-konventionen).
     private static IEnumerable<GraphEventDefinition> Topics(DcrGraphDefinition definition) =>
         definition.Events.Where(IsTopic).OrderBy(e => e.Sequence);

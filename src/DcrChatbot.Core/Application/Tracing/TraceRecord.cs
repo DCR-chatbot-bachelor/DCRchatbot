@@ -29,6 +29,13 @@ public sealed class TraceRecord
     /// <summary>Udfaldet af turen, fx draft_created, event_executed, no_match.</summary>
     public string? Outcome { get; set; }
 
+    /// <summary>
+    /// Sat i den tur, hvor samtalen fik sin graf ud fra borgerens besked.
+    /// Outcome ovenfor er stadig event-udfaldet (fx draft_created), så
+    /// routing og event-match kan måles hver for sig.
+    /// </summary>
+    public RoutingTrace? Routing { get; set; }
+
     public string? Reply { get; set; }
     public DraftTrace? PendingDraft { get; set; }
     public bool IsEnded { get; set; }
@@ -51,6 +58,15 @@ public sealed class ValidationTrace
     public bool IsValid { get; set; }
     public string? Error { get; set; }
     public bool IsInferred { get; set; }
+}
+
+public sealed class RoutingTrace
+{
+    /// <summary>graph_routed, graph_ambiguous eller graph_not_found.</summary>
+    public string Outcome { get; set; } = string.Empty;
+    public string? GraphId { get; set; }
+    public List<string> CandidateGraphIds { get; set; } = [];
+    public string Explanation { get; set; } = string.Empty;
 }
 
 public sealed class LlmCallTrace

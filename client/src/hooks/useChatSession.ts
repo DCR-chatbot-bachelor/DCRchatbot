@@ -131,7 +131,7 @@ export function useChatSession() {
   }
 
   async function start(graphId: string, selectedMode: ExecutionMode) {
-    if (!graphId || isSending) return;
+    if (isSending) return;
     setSessionId(null);
     setMessages([]);
     setPendingDraft(null);

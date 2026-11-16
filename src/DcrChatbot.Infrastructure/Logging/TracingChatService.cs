@@ -95,6 +95,7 @@ public sealed class TracingChatService(
             ProposedValue = turn.ProposedValue,
             Validations = turn.Validations.ToList(),
             Outcome = error is null ? turn.Outcome : "error",
+            Routing = turn.Routing,
             Reply = response?.Message,
             PendingDraft = draft is null ? null : new DraftTrace
             {

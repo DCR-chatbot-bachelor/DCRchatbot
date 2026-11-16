@@ -2,9 +2,11 @@ using DcrChatbot.Core.Application.DcrEngine;
 using DcrChatbot.Core.Application.Drafts;
 using DcrChatbot.Core.Application.Dtos;
 using DcrChatbot.Core.Application.Modes;
+using DcrChatbot.Core.Application.Routing;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.Enums;
+using DcrChatbot.Core.Domain.ValueObjects;
 using DcrChatbot.Core.Interfaces;
 using DcrChatbot.Core.Options;
 using Microsoft.Extensions.Logging;
@@ -24,11 +26,13 @@ public sealed class ChatService(
     ISessionStore sessionStore,
     IOptions<LlmOptions> llmOptions,
     TurnTrace trace,
+    GraphCatalog graphCatalog,
     ILogger<ChatService> logger) : IChatService
 {
     private readonly LlmOptions llmOptions = llmOptions.Value;
     private readonly SimulationSync simulation = new(dcrRepository, sessionStore);
     private readonly LlmOnlyConversation llmOnly = new(llmService, llmOptions.Value, trace);
+    private readonly GraphRouter graphRouter = new(llmService, llmOptions.Value);
     private readonly IDcrReplyStrategy strictReplies = new StrictReplies();
     private readonly IDcrReplyStrategy guidedReplies = new GuidedReplies(llmService, llmOptions.Value, logger);
 
@@ -36,7 +40,15 @@ public sealed class ChatService(
         ChatRequest request,
         CancellationToken cancellationToken = default)
     {
-        var graphId = RequireValue(request.GraphId, "GraphId er påkrævet ved start af en samtale.");
+        // Uden GraphId er det den generelle chatbot: grafen findes ud fra
+        // borgerens første besked. Med GraphId køres samtalen på én fast
+        // graf, som testbatteriet gør.
+        if (string.IsNullOrWhiteSpace(request.GraphId))
+        {
+            return await StartWithoutGraphAsync(request.Mode, cancellationToken);
+        }
+
+        var graphId = request.GraphId.Trim();
 
         // FR-TEST-1: LlmOnly har ingen DCR-kobling, kun grafens viden som
         // tekst. Den læses fra grafens definition, så intet udføres for at
@@ -83,12 +95,24 @@ public sealed class ChatService(
         ChatRequest request,
         CancellationToken cancellationToken = default)
     {
-        var message = RequireValue(request.Message, "Beskeden må ikke være tom.");
+        var userMessage = RequireValue(request.Message, "Beskeden må ikke være tom.");
         return await sessionStore.ExecuteAsync(sessionId, async session =>
         {
             // NFR-4: alle LLM-kald herunder får SessionId og Mode på loglinjen.
             using var scope = BeginSessionScope(session);
             trace.Attach(session);
+
+            var message = userMessage;
+            if (!HasGraph(session))
+            {
+                var routing = await RouteToGraphAsync(session, message, cancellationToken);
+                if (routing.Response is not null)
+                {
+                    return routing.Response;
+                }
+
+                message = routing.Message;
+            }
 
             if (session.Mode == ExecutionMode.LlmOnly)
             {
@@ -247,6 +271,109 @@ public sealed class ChatService(
             return ToResponse(session, responseText);
         }, cancellationToken);
     }
+
+    // ---- Generel chatbot: find grafen ud fra borgerens besked ----
+
+    private const string GeneralGreeting = "Hej! Hvad kan jeg hjælpe dig med?";
+
+    private static bool HasGraph(ChatSession session) => !string.IsNullOrWhiteSpace(session.GraphId);
+
+    // Sessionen oprettes uden graf og simulation; de oprettes først, når
+    // borgerens første besked er routet til en graf.
+    private async Task<ChatResponse> StartWithoutGraphAsync(ExecutionMode mode, CancellationToken cancellationToken)
+    {
+        var session = new ChatSession { Mode = mode };
+        await sessionStore.SaveSessionAsync(session, cancellationToken);
+        trace.Attach(session);
+        trace.RecordOutcome("started");
+
+        // Emnerne er kun en hjælp; kan kataloget ikke hentes nu, kan
+        // borgeren stadig skrive sit spørgsmål.
+        List<Suggestion> suggestions;
+        try
+        {
+            suggestions = ToGraphSuggestions(await graphCatalog.GetEntriesAsync(dcrRepository, cancellationToken));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Kunne ikke hente grafkataloget ved start af session {SessionId}.", session.SessionId);
+            suggestions = [];
+        }
+
+        return ToResponse(session, GeneralGreeting, suggestions: suggestions);
+    }
+
+    // Response er sat, når beskeden ikke kunne routes til én graf; så er
+    // svaret til borgeren en liste over emner. Ellers har sessionen nu sin
+    // graf, og Message er den besked, der skal behandles videre.
+    private sealed record RoutingResult(string Message, ChatResponse? Response);
+
+    private async Task<RoutingResult> RouteToGraphAsync(
+        ChatSession session, string message, CancellationToken cancellationToken)
+    {
+        var catalog = await graphCatalog.GetEntriesAsync(dcrRepository, cancellationToken);
+        var decision = await graphRouter.RouteAsync(message, catalog, cancellationToken);
+        var outcome = decision.Kind switch
+        {
+            GraphRoutingKind.Routed => "graph_routed",
+            GraphRoutingKind.Ambiguous => "graph_ambiguous",
+            _ => "graph_not_found"
+        };
+        trace.RecordRouting(
+            outcome, decision.Graph?.GraphId, decision.Candidates.Select(g => g.GraphId), decision.Explanation);
+
+        if (decision.Graph is null)
+        {
+            // Hellere en liste over, hvad chatbotten kan, end et gæt.
+            // Ved flere mulige grafer huskes spørgsmålet, så borgeren ikke
+            // skal gentage det efter at have valgt emne.
+            var isAmbiguous = decision.Kind == GraphRoutingKind.Ambiguous;
+            session.UnroutedQuestion = isAmbiguous ? message : null;
+            var reply = isAmbiguous
+                ? "Dit spørgsmål kan handle om flere emner. Hvilket af dem mener du?"
+                : catalog.Count == 0
+                    ? "Det kan jeg desværre ikke hjælpe med lige nu."
+                    : "Det kan jeg desværre ikke hjælpe med. Jeg kan hjælpe dig med disse emner:";
+            session.History.Add(new ChatMessage { Sender = "User", Content = message });
+            session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+            trace.RecordOutcome(outcome);
+            return new RoutingResult(
+                message,
+                ToResponse(session, reply, suggestions: ToGraphSuggestions(isAmbiguous ? decision.Candidates : catalog)));
+        }
+
+        // Har borgeren valgt emne efter et tvetydigt spørgsmål, er det
+        // spørgsmålet, der skal besvares, ikke emnets titel.
+        var question = session.UnroutedQuestion is not null && AnswerValues.IsSameText(decision.Graph.Title, message)
+            ? session.UnroutedQuestion
+            : message;
+        session.UnroutedQuestion = null;
+
+        var graphId = decision.Graph.GraphId;
+        session.GraphId = graphId;
+        if (session.Mode == ExecutionMode.LlmOnly)
+        {
+            // LlmOnly bruger samme routing og får kun den valgte grafs viden,
+            // så den har præcis samme viden som DCR-tilstandene.
+            session.GraphKnowledge = GraphKnowledgeBuilder.Build(
+                await dcrRepository.GetGraphDefinitionAsync(graphId, cancellationToken));
+        }
+        else
+        {
+            session.SimulationId = await dcrRepository.CreateSimulationAsync(graphId, cancellationToken);
+            session.CurrentGraphState = await dcrRepository.GetGraphStateAsync(
+                graphId, session.SimulationId, cancellationToken);
+        }
+
+        // Gemmes med det samme, så simulationen ikke går tabt, hvis
+        // resten af turen fejler.
+        await sessionStore.SaveSessionAsync(session, cancellationToken);
+        trace.Attach(session);
+        return new RoutingResult(question, null);
+    }
+
+    private static List<Suggestion> ToGraphSuggestions(IEnumerable<GraphCatalogEntry> graphs) =>
+        graphs.Select(g => new Suggestion { EventId = g.GraphId, Label = g.Title }).ToList();
 
     // ---- Ny besked: tolk den og lav en kladde ----
 

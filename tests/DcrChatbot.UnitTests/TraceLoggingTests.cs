@@ -1,5 +1,6 @@
 using DcrChatbot.Core.Application;
 using DcrChatbot.Core.Application.Dtos;
+using DcrChatbot.Core.Application.Routing;
 using DcrChatbot.Core.Application.Tracing;
 using DcrChatbot.Core.Domain.Entities;
 using DcrChatbot.Core.Domain.ValueObjects;
@@ -51,7 +52,7 @@ public sealed class TraceLoggingTests : IDisposable
         var turn = new TurnTrace();
         var llm = new LoggingLlmService(provider.Object, turn, NullLogger<LoggingLlmService>.Instance);
         var chat = new ChatService(
-            dcrRepository.Object, llm, sessionStore, Options.Create(new LlmOptions()), turn, NullLogger<ChatService>.Instance);
+            dcrRepository.Object, llm, sessionStore, Options.Create(new LlmOptions()), turn, new GraphCatalog(), NullLogger<ChatService>.Instance);
         return new TracingChatService(chat, turn, traceStore, NullLogger<TracingChatService>.Instance);
     }
 
@@ -108,6 +109,31 @@ public sealed class TraceLoggingTests : IDisposable
         Assert.Equal("confirm", failed.Action);
         Assert.Equal("error", failed.Outcome);
         Assert.StartsWith("KeyNotFoundException", failed.Error);
+    }
+
+    [Fact]
+    public async Task RoutedFirstMessage_LogsRoutingDecision_SeparatelyFromEventOutcome()
+    {
+        dcrRepository.Setup(r => r.GetGraphsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new DcrGraph { GraphId = "g1", Title = "SU" }]);
+        dcrRepository.Setup(r => r.GetGraphDefinitionAsync("g1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DcrGraphDefinition());
+        provider
+            .Setup(s => s.MatchGraphAsync(It.IsAny<string>(), It.IsAny<IEnumerable<GraphCatalogEntry>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmGraphMatch { GraphId = "g1", CandidateGraphIds = ["g1"], Explanation = "Handler om SU." }, new TokenUsageResult()));
+
+        var start = await CreateScope().StartAsync(new ChatRequest());
+        await CreateScope().SendMessageAsync(start.SessionId, new ChatRequest { Message = "ja det har jeg" });
+
+        var message = (await traceStore.ReadSessionAsync(start.SessionId))[1];
+        Assert.Equal("g1", message.GraphId);
+        Assert.Equal("draft_created", message.Outcome);
+        Assert.NotNull(message.Routing);
+        Assert.Equal("graph_routed", message.Routing!.Outcome);
+        Assert.Equal("g1", message.Routing.GraphId);
+        Assert.Equal(["g1"], message.Routing.CandidateGraphIds);
+        Assert.Equal("Handler om SU.", message.Routing.Explanation);
+        Assert.Contains(message.LlmCalls, c => c.Operation == "MatchGraph" && c.EventId == "g1");
     }
 
     public void Dispose()

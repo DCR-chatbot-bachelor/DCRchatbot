@@ -12,5 +12,6 @@ public static class PromptCatalog
     // v3: LlmOnly oversætter tydelige svar til et valg og bekræfter rettelser;
     //     DcrGuided har ikke længere en prompt til beskeder uden emne; æøå
     //     i events skrives som de er i stedet for som escape-koder.
-    public const string Version = "v3";
+    // v4: ny prompt til routing af borgerens besked til en graf (MatchGraph).
+    public const string Version = "v4";
 }

@@ -38,6 +38,21 @@ public sealed class GeminiLlmService : ILlmService
         return (LlmIntentPrompt.ParseMatchedEventId(text, "Gemini"), usage);
     }
 
+    public async Task<(LlmGraphMatch GraphMatch, TokenUsageResult TokenUsage)> MatchGraphAsync(
+        string userMessage,
+        IEnumerable<GraphCatalogEntry> graphs,
+        LlmOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userMessage);
+        ArgumentNullException.ThrowIfNull(graphs);
+        ValidateOptions(options);
+
+        var prompt = LlmIntentPrompt.BuildMatchGraphPrompt(userMessage, graphs);
+        var (text, usage) = await SendPromptAsync(prompt, options, jsonResponse: true, cancellationToken);
+        return (LlmIntentPrompt.ParseGraphMatch(text, "Gemini"), usage);
+    }
+
     public async Task<(LlmValueResult ValueResult, TokenUsageResult TokenUsage)> ExtractValueAsync(
         string userMessage,
         DcrEvent matchedEvent,
