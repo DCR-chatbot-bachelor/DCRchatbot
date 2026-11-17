@@ -1,0 +1,67 @@
+[
+  {
+    "term": "SU",
+    "aliases": ["Statens Uddannelsesstøtte", "Statens Uddannelsesstotte"],
+    "definition": "Statens Uddannelsesstøtte. En økonomisk støtte fra staten, som du kan få, mens du er i gang med en uddannelse, hvis du og din uddannelse opfylder en række betingelser. Du skal selv søge om SU."
+  },
+  {
+    "term": "minSU",
+    "aliases": ["min SU"],
+    "definition": "Selvbetjeningsløsningen, hvor du søger SU og SU-lån, følger din ansøgning, ser dine aktuelle SU-forhold og retter dine oplysninger. Du logger ind med MitID."
+  },
+  {
+    "term": "SU-lån",
+    "aliases": ["SU-lan", "SU lån"],
+    "definition": "Et lån med lav rente, du kan vælge at tage som supplement til din SU, mens du uddanner dig. Lånet søges i minSU og skal betales tilbage efter studiet."
+  },
+  {
+    "term": "MitID",
+    "aliases": ["Mit-ID", "Mit ID"],
+    "definition": "Danmarks digitale ID og afløseren for NemID. En digital signatur, du bruger til at logge sikkert ind på offentlige selvbetjeningsløsninger — blandt andet minSU — og i din netbank."
+  },
+  {
+    "term": "NemID",
+    "aliases": ["Nem-ID"],
+    "definition": "Den tidligere digitale signatur til netbank og offentlige tjenester. NemID er udfaset og erstattet af MitID."
+  },
+  {
+    "term": "NemKonto",
+    "aliases": ["Nem-Konto", "Nem Konto"],
+    "definition": "Den bankkonto, som det offentlige automatisk udbetaler penge til, fx SU, løn eller overskydende skat. Alle med et CPR-nummer har én NemKonto. Du kan oprette eller ændre den på nemkonto.dk eller via din bank."
+  },
+  {
+    "term": "CPR-nummer",
+    "aliases": ["CPR", "personnummer", "CPR-nr", "CPR nummer"],
+    "definition": "Dit personnummer i Det Centrale Personregister (CPR). Et unikt 10-cifret nummer, som det offentlige bruger til at identificere dig."
+  },
+  {
+    "term": "Folkeregisteret",
+    "aliases": ["Folkeregistreret", "Folkeregistret", "Folkeregister"],
+    "definition": "Det register, hvor din officielle bopælsadresse i Danmark er registreret. Når du flytter, melder du adresseændring hertil, og det offentlige henter din adresse herfra."
+  },
+  {
+    "term": "digital signatur",
+    "aliases": ["digital underskrift"],
+    "definition": "En elektronisk underskrift, der bekræfter din identitet online, så du sikkert kan logge ind på og underskrive i offentlige tjenester. MitID fungerer som din digitale signatur."
+  },
+  {
+    "term": "selvbetjeningsløsning",
+    "aliases": ["selvbetjeningsløsninger", "selvbetjening", "selvbetjeningslosning"],
+    "definition": "En digital tjeneste på det offentliges hjemmesider, hvor du selv kan ordne dine sager online, fx søge SU i minSU eller melde flytning."
+  },
+  {
+    "term": "netbank",
+    "aliases": ["netbanken", "netbankerne"],
+    "definition": "Din banks online løsning, hvor du kan se dine konti, overføre penge og betale regninger via internettet. Du logger typisk ind med MitID."
+  },
+  {
+    "term": "Digital Post",
+    "aliases": ["Digital Post", "e-Boks", "eBoks"],
+    "definition": "Din sikre, digitale postkasse til post fra det offentlige. Her modtager du fx breve fra kommunen, SKAT og Udbetaling Danmark. Du åbner den med MitID."
+  },
+  {
+    "term": "borger.dk",
+    "aliases": ["Borger.dk"],
+    "definition": "Det offentliges fælles portal, hvor du finder information og selvbetjening fra stat, regioner og kommuner samlet ét sted."
+  }
+]

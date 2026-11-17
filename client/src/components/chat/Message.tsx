@@ -1,5 +1,6 @@
 import type { AnsweredQuestion, MessageAnswer, QuickReply } from "../../types/chat";
 import { Pencil } from "lucide-react";
+import { GlossaryText } from "./GlossaryText";
 
 interface MessageProps {
   sender: "user" | "bot";
@@ -76,7 +77,8 @@ export function Message({
                 )}
               </span>
             ))}
-          <p>{content}</p>
+          {/* Fagbegreber forklares kun i bot-svar, ikke i borgerens egne beskeder. */}
+          <p>{sender === "bot" ? <GlossaryText text={content} /> : content}</p>
         </div>
         {onSelectQuickReply && quickReplies.length > 0 && (
           // Grafens emner (FR-LLM-3) eller svar på et choice-spørgsmål;
