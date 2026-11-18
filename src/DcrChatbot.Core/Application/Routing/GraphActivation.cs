@@ -13,7 +13,11 @@ namespace DcrChatbot.Core.Application.Routing;
 /// </summary>
 internal sealed class GraphActivation(IDcrRepository dcrRepository, ISessionStore sessionStore)
 {
-    public async Task ActivateAsync(ChatSession session, string graphId, CancellationToken cancellationToken)
+    // keepCurrent: false, når borgeren har valgt at stoppe den formular, de
+    // var i gang med. Den hidtidige graf gemmes så ikke, og vender borgeren
+    // tilbage til emnet, starter grafen forfra med en ny simulation.
+    public async Task ActivateAsync(
+        ChatSession session, string graphId, CancellationToken cancellationToken, bool keepCurrent = true)
     {
         if (string.Equals(session.GraphId, graphId, StringComparison.OrdinalIgnoreCase))
         {
@@ -39,7 +43,15 @@ internal sealed class GraphActivation(IDcrRepository dcrRepository, ISessionStor
 
         // Først når den nye graf er klar, lægges den gamle til side; fejler
         // opslaget ovenfor, er samtalen uændret.
-        Suspend(session);
+        if (keepCurrent)
+        {
+            Suspend(session);
+        }
+        else
+        {
+            session.SuspendedGraphs.RemoveAll(
+                g => string.Equals(g.GraphId, session.GraphId, StringComparison.OrdinalIgnoreCase));
+        }
         if (resumed is not null)
         {
             session.SuspendedGraphs.Remove(resumed);

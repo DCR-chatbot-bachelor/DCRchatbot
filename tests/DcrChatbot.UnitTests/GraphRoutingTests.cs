@@ -316,6 +316,110 @@ public sealed class GraphRoutingTests
         Assert.Equal("graph_switched", trace.Routing?.Outcome);
     }
 
+    [Fact]
+    public async Task InTheMiddleOfAForm_AMessageAboutAnotherGraph_AsksWhetherToStopTheForm()
+    {
+        var sessionId = await StartInSuFormAsync();
+
+        var response = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+
+        Assert.Equal(ChatService.StopFormQuestion, response.Message);
+        Assert.Equal(["Ja", "Nej"], response.AnswerOptions.Select(o => o.Label));
+        Assert.Equal(SuGraphId, (await sessionStore.GetSessionAsync(sessionId))!.GraphId);
+        Assert.Equal("graph_switch_proposed", trace.Routing?.Outcome);
+        dcrRepository.Verify(r => r.CreateSimulationAsync(HousingGraphId, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task StoppingTheForm_SwitchesGraph_AnswersTheQuestion_AndDoesNotKeepTheForm()
+    {
+        var sessionId = await StartInSuFormAsync();
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+
+        var response = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "Ja" });
+
+        var session = (await sessionStore.GetSessionAsync(sessionId))!;
+        Assert.StartsWith("Okay, formularen er stoppet.", response.Message);
+        Assert.Equal("bolig", response.PendingDraft?.EventId);
+        Assert.Equal(HousingGraphId, session.GraphId);
+        Assert.Empty(session.SuspendedGraphs);
+        Assert.Null(session.PendingGraphSwitch);
+        Assert.Equal("graph_switch_confirmed", trace.Routing?.Outcome);
+        Assert.Equal(SuGraphId, trace.Routing?.PreviousGraphId);
+    }
+
+    [Fact]
+    public async Task ReturningToAStoppedForm_StartsTheGraphOver()
+    {
+        var sessionId = await StartInSuFormAsync();
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+        var housing = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "Ja" });
+        await service.RejectDraftAsync(sessionId, housing.PendingDraft!.Id);
+
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "hvad med SU-ansøgningen?" });
+
+        Assert.Equal(SuGraphId, (await sessionStore.GetSessionAsync(sessionId))!.GraphId);
+        dcrRepository.Verify(r => r.CreateSimulationAsync(SuGraphId, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task NotStoppingTheForm_StaysInTheForm_AndAsksItsQuestionAgain()
+    {
+        var sessionId = await StartInSuFormAsync();
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+
+        var response = await service.SendMessageAsync(sessionId, new ChatRequest { Message = "Nej" });
+
+        var session = (await sessionStore.GetSessionAsync(sessionId))!;
+        Assert.Equal("Okay, så fortsætter vi: Hvad er dit navn?", response.Message);
+        Assert.Equal(SuGraphId, session.GraphId);
+        Assert.Null(session.PendingGraphSwitch);
+        Assert.Equal("graph_switch_declined", trace.Routing?.Outcome);
+        dcrRepository.Verify(r => r.CreateSimulationAsync(HousingGraphId, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AWrittenAnswerToTheStopQuestion_IsClassifiedLikeADraftConfirmation()
+    {
+        var sessionId = await StartInSuFormAsync();
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "kan jeg få boligstøtte?" });
+        llmService
+            .Setup(s => s.ClassifyConfirmationAsync("ja, stop den bare", It.IsAny<PendingAnswer>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(((bool?)true, new TokenUsageResult()));
+
+        await service.SendMessageAsync(sessionId, new ChatRequest { Message = "ja, stop den bare" });
+
+        Assert.Equal(HousingGraphId, (await sessionStore.GetSessionAsync(sessionId))!.GraphId);
+    }
+
+    // Som StartInSuGraphAsync, men SU-grafen har en formular, hvis første
+    // spørgsmål (navn) står åbent; ingen af testenes beskeder er et navn.
+    private async Task<string> StartInSuFormAsync()
+    {
+        dcrRepository
+            .Setup(r => r.GetGraphStateAsync(SuGraphId, "sim-su", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GraphState
+            {
+                Events =
+                [
+                    new DcrEvent
+                    {
+                        Id = "minSU", Label = "Hvordan søger jeg SU?", DataType = "choice",
+                        IsEnabled = true, Included = true, ChoiceValues = "ja (ja), nej (nej)"
+                    },
+                    new DcrEvent
+                    {
+                        Id = "navn", Label = "Hvad er dit navn?", DataType = "text", Roles = "User",
+                        IsEnabled = true, Included = true, IsPending = true
+                    }
+                ]
+            });
+        llmService
+            .Setup(s => s.ExtractValueAsync(It.IsAny<string>(), It.IsAny<DcrEvent>(), It.IsAny<IEnumerable<DcrEvent>>(), It.IsAny<LlmOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new LlmValueResult { ExtractedValue = null }, new TokenUsageResult()));
+        return await StartInSuGraphAsync();
+    }
+
     // En samtale uden fast graf, som er routet til SU-grafen og ikke har
     // nogen åben kladde. Emne-match og routing svarer ud fra beskeden.
     private async Task<string> StartInSuGraphAsync()

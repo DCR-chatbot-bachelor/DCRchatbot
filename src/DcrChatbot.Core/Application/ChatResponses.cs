@@ -58,6 +58,16 @@ public static class ChatResponses
     // svar-knapper. Ikke mens en kladde er åben: der svares med Ja/Nej til den.
     private static List<AnswerOption> GetAnswerOptions(ChatSession session)
     {
+        // "Vil du stoppe med formularen?" besvares med ja eller nej.
+        if (session.PendingGraphSwitch is not null)
+        {
+            return
+            [
+                new AnswerOption { Label = "Ja", Value = "ja" },
+                new AnswerOption { Label = "Nej", Value = "nej" }
+            ];
+        }
+
         if (session.PendingAnswersQueue.Count > 0)
         {
             return [];

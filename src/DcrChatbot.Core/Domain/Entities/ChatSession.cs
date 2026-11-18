@@ -37,6 +37,12 @@ public class ChatSession
     public bool IsGraphFixed { get; set; }
 
     /// <summary>
+    /// Sat, mens botten venter på svar på, om borgeren vil stoppe den
+    /// formular, de er i gang med, for at tale om en anden graf. Null ellers.
+    /// </summary>
+    public PendingGraphSwitch? PendingGraphSwitch { get; set; }
+
+    /// <summary>
     /// Afledte svar til felter, der endnu ikke kan udfyldes, fordi de venter
     /// på et tidligere felt (FR-DCR-2). De flyttes til køen, når feltet bliver
     /// enabled, så borgeren ikke skal gentage dem.

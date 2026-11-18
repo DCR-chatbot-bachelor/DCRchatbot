@@ -126,7 +126,7 @@ public sealed class ChatService(
                 // no_match og får derfor også lov at skifte graf.
                 var reply = await llmOnly.GenerateReplyAsync(session, message, cancellationToken);
                 if (mayRoute && LlmOnlyConversation.IsNoAnswer(reply) &&
-                    await TrySwitchGraphAsync(session, message, null, cancellationToken))
+                    await TrySwitchGraphAsync(session, message, null, formIsOpen: false, cancellationToken) == GraphSwitch.Switched)
                 {
                     reply = await llmOnly.GenerateReplyAsync(session, message, cancellationToken);
                 }
@@ -135,6 +135,11 @@ public sealed class ChatService(
             }
 
             session.History.Add(new ChatMessage { MessageId = request.MessageId, Sender = "User", Content = message });
+            if (session.PendingGraphSwitch is not null)
+            {
+                return await ResolveGraphSwitchAsync(session, message, request.MessageId, cancellationToken);
+            }
+
             if (session.PendingAnswersQueue.Count > 0)
             {
                 var answerResult = await llmService.ClassifyConfirmationAsync(
@@ -204,6 +209,9 @@ public sealed class ChatService(
             using var scope = BeginSessionScope(session);
             trace.Attach(session);
             trace.RecordEvent(eventId, null);
+
+            // Retter borgeren et svar, vil de blive i formularen.
+            session.PendingGraphSwitch = null;
             session.History.Add(new ChatMessage { Sender = "User", Content = message });
 
             // FR-HITL-2: spørg DCR, ikke sessionens kopi, om svaret stadig kan rettes.
@@ -265,6 +273,8 @@ public sealed class ChatService(
             trace.Attach(session);
             var checkpoint = session.Checkpoints.FirstOrDefault(c => c.MessageId == messageId)
                 ?? throw new ChatConflictException("Denne besked kan ikke længere bruges som tilbagegangspunkt.");
+
+            session.PendingGraphSwitch = null;
 
             // Har samtalen skiftet emne siden, skiftes der tilbage til den
             // graf, svaret hørte til, før svarene udføres igen.
@@ -379,19 +389,34 @@ public sealed class ChatService(
         return new RoutingResult(question, null);
     }
 
+    // Udfaldet af et forsøg på at skifte graf midt i samtalen.
+    private enum GraphSwitch
+    {
+        Stayed,
+        Switched,
+
+        // Borgeren er midt i en formular og bliver spurgt, om de vil stoppe
+        // den, før der skiftes (se PendingGraphSwitch).
+        Proposed
+    }
+
+    public const string StopFormQuestion = "Du er i gang med at udfylde en formular. Vil du stoppe med den?";
+
     // Skift af emne midt i samtalen: beskeden passede ikke til den aktuelle
     // graf (ingen emne-match, intet svar på spørgsmålet, eller et LlmOnly-
     // afslag). Peger routing på en anden graf, skiftes der dertil, og
     // beskeden behandles der. Den gamle graf lægges til side, så borgeren
-    // kan vende tilbage til den. Returnerer true, hvis der blev skiftet.
-    private async Task<bool> TrySwitchGraphAsync(
-        ChatSession session, string message, string? messageId, CancellationToken cancellationToken)
+    // kan vende tilbage til den. Er en formular i gang (formIsOpen), skiftes
+    // der ikke med det samme: borgeren spørges først, om formularen skal
+    // stoppes, så et svar på formularen aldrig tages for et nyt emne.
+    private async Task<GraphSwitch> TrySwitchGraphAsync(
+        ChatSession session, string message, string? messageId, bool formIsOpen, CancellationToken cancellationToken)
     {
         // Kladder i køen hører til den aktuelle graf og skal afgøres først.
         // En samtale startet på en bestemt graf (testbatteriet) bliver i den.
         if (session.IsGraphFixed || session.PendingAnswersQueue.Count > 0)
         {
-            return false;
+            return GraphSwitch.Stayed;
         }
 
         IReadOnlyList<GraphCatalogEntry> catalog;
@@ -402,12 +427,12 @@ public sealed class ChatService(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Kunne ikke hente grafkataloget i session {SessionId}; bliver i grafen.", session.SessionId);
-            return false;
+            return GraphSwitch.Stayed;
         }
 
         if (!catalog.Any(g => !string.Equals(g.GraphId, session.GraphId, StringComparison.OrdinalIgnoreCase)))
         {
-            return false;
+            return GraphSwitch.Stayed;
         }
 
         var previousGraphId = session.GraphId;
@@ -416,7 +441,7 @@ public sealed class ChatService(
         var switches = target is not null &&
                        !string.Equals(target.GraphId, previousGraphId, StringComparison.OrdinalIgnoreCase);
         var outcome = switches
-            ? "graph_switched"
+            ? formIsOpen ? "graph_switch_proposed" : "graph_switched"
             : decision.Kind switch
             {
                 GraphRoutingKind.Routed => "graph_unchanged",
@@ -427,7 +452,7 @@ public sealed class ChatService(
             outcome, target?.GraphId, decision.Candidates.Select(g => g.GraphId), decision.Explanation, previousGraphId);
         if (!switches)
         {
-            return false;
+            return GraphSwitch.Stayed;
         }
 
         // Tilbagegangspunktet for beskeden blev lavet i den gamle graf;
@@ -437,9 +462,80 @@ public sealed class ChatService(
             session.Checkpoints.RemoveAll(c => c.MessageId == messageId);
         }
 
+        if (formIsOpen)
+        {
+            session.PendingGraphSwitch = new PendingGraphSwitch
+            {
+                GraphId = target!.GraphId,
+                Message = message,
+                MessageId = messageId,
+                Explanation = decision.Explanation
+            };
+            return GraphSwitch.Proposed;
+        }
+
         await graphActivation.ActivateAsync(session, target!.GraphId, cancellationToken);
         trace.Attach(session);
-        return true;
+        return GraphSwitch.Switched;
+    }
+
+    private ChatResponse ProposeStoppingForm(ChatSession session)
+    {
+        trace.RecordOutcome("graph_switch_proposed");
+        session.History.Add(new ChatMessage { Sender = "Bot", Content = StopFormQuestion });
+        return ToResponse(session, StopFormQuestion);
+    }
+
+    // Borgerens svar på StopFormQuestion. Ja: formularen stoppes, dens svar
+    // gemmes ikke, og spørgsmålet, der fik botten til at spørge, besvares i
+    // den nye graf. Nej: formularen fortsætter med sit åbne spørgsmål. Et
+    // svar, der hverken er ja eller nej, behandles som en almindelig besked.
+    private async Task<ChatResponse> ResolveGraphSwitchAsync(
+        ChatSession session, string message, string? messageId, CancellationToken cancellationToken)
+    {
+        var proposal = session.PendingGraphSwitch!;
+        session.PendingGraphSwitch = null;
+
+        var stop = AnswerValues.IsSameText("ja", message) ? true
+            : AnswerValues.IsSameText("nej", message) ? false
+            : (await llmService.ClassifyConfirmationAsync(
+                message,
+                new PendingAnswer { Question = StopFormQuestion, ProposedValue = "ja" },
+                llmOptions,
+                cancellationToken)).IsConfirmed;
+        if (stop is null)
+        {
+            return await CreateDraftAsync(session, message, messageId, cancellationToken);
+        }
+
+        var previousGraphId = session.GraphId;
+        trace.RecordRouting(
+            stop.Value ? "graph_switch_confirmed" : "graph_switch_declined",
+            proposal.GraphId,
+            [proposal.GraphId],
+            proposal.Explanation,
+            previousGraphId);
+
+        if (!stop.Value)
+        {
+            await simulation.EnsureFreshStateAsync(session, cancellationToken);
+            var openQuestion = FaqGraph.GetNextAnswerablePendingEvent(session.CurrentGraphState, session.RecommendedTopicIds);
+            var reply = openQuestion is null
+                ? "Okay, så fortsætter vi."
+                : $"Okay, så fortsætter vi: {openQuestion.Label}";
+            trace.RecordOutcome("graph_switch_declined");
+            session.History.Add(new ChatMessage { Sender = "Bot", Content = reply });
+            return ToResponse(session, reply);
+        }
+
+        // "Stoppe" betyder stoppe: formularens svar gemmes ikke, og vender
+        // borgeren tilbage til emnet, starter grafen forfra.
+        await graphActivation.ActivateAsync(session, proposal.GraphId, cancellationToken, keepCurrent: false);
+        trace.Attach(session);
+        var response = await CreateDraftAsync(
+            session, proposal.Message, proposal.MessageId, cancellationToken, mayRoute: false);
+        response.Message = $"Okay, formularen er stoppet.\n\n{response.Message}";
+        return response;
     }
 
     private static List<Suggestion> ToGraphSuggestions(IEnumerable<GraphCatalogEntry> graphs) =>
@@ -465,7 +561,7 @@ public sealed class ChatService(
         var candidates = FaqGraph.GetTopicEvents(session.CurrentGraphState);
         if (pendingEvent is null && candidates.Count == 0)
         {
-            if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+            if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, formIsOpen: false, cancellationToken) == GraphSwitch.Switched)
             {
                 return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
             }
@@ -487,7 +583,7 @@ public sealed class ChatService(
             {
                 // Handler beskeden om en anden graf (fx alkohol midt i SU),
                 // fortsætter samtalen dér med det samme.
-                if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+                if (mayRoute && await TrySwitchGraphAsync(session, message, messageId, formIsOpen: false, cancellationToken) == GraphSwitch.Switched)
                 {
                     return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
                 }
@@ -516,11 +612,11 @@ public sealed class ChatService(
             if (inferredDrafts.Count == 0)
             {
                 // Midt i en formular kan borgeren spørge om noget helt
-                // andet; formularen ligger klar, hvis de vender tilbage.
+                // andet. Så spørges de først, om formularen skal stoppes.
                 if (mayRoute && !isEventMatch &&
-                    await TrySwitchGraphAsync(session, message, messageId, cancellationToken))
+                    await TrySwitchGraphAsync(session, message, messageId, formIsOpen: true, cancellationToken) == GraphSwitch.Proposed)
                 {
-                    return await CreateDraftAsync(session, message, messageId, cancellationToken, mayRoute: false);
+                    return ProposeStoppingForm(session);
                 }
 
                 // Botten har stillet et spørgsmål; den bedste hjælp er at
