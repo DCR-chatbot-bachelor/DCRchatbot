@@ -1,0 +1,19 @@
+{
+  "StartedAt": "2026-11-19T14:51:47.851966+01:00",
+  "FinishedAt": "2026-11-19T15:02:48.3723255+01:00",
+  "GraphId": "2012392",
+  "ScenarioFile": "battery/scenarios/su-faq.jsonc",
+  "ScenarioCount": 38,
+  "Modes": [
+    "DcrStrict",
+    "DcrGuided",
+    "LlmOnly"
+  ],
+  "Runs": 3,
+  "PromptVersion": "v3",
+  "Provider": "OpenAi",
+  "ModelId": "gpt-4.1-mini",
+  "Temperature": 0,
+  "GitCommit": "18bc360",
+  "ConfirmAllDrafts": false
+}

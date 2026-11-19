@@ -82,6 +82,16 @@ To change a prompt:
 The test fails whenever a prompt changes without a new version, so results
 recorded under one version always come from the same prompts.
 
+## Test battery
+
+`battery/` runs citizen scenarios through all three execution modes against
+the real graph and LLM and prepares a blind scoring sheet for the report. See
+[battery/README.md](battery/README.md).
+
+```powershell
+dotnet run --project battery
+```
+
 ## Session storage
 
 Chat sessions are persisted as JSON files below the API's `App_Data/sessions`

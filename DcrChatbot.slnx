@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/battery/">
+    <Project Path="battery/DcrChatbot.Battery.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/DcrChatbot.Core/DcrChatbot.Core.csproj" />
     <Project Path="src/DcrChatbot.Infrastructure/DcrChatbot.Infrastructure.csproj" />
